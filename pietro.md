@@ -11,6 +11,11 @@ covering edge cases and rejected alternatives. Code that comes after it should
 be small and boring. Nothing in this document should be implemented until the
 plan is reviewed and locked.
 
+> **Checkpoint 2026-05-14:** plan locked, M1–M5 shipped (backend complete,
+> 55/55 tests). M6 (UI) and M7 (embed + release) remain. For a one-page
+> resumption snapshot, read **`STATUS.md`** at the repo root. For the live
+> milestone state with shipped notes, see [§19](#19-milestones-build-order).
+
 ---
 
 ## 1. One-paragraph pitch

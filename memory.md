@@ -1,6 +1,25 @@
 # Pietro — Agent Memory
 
-Updated: 2026-05-14 (M5 complete)
+Updated: 2026-05-14 (M5 complete — checkpointed)
+
+## ⏯ How to resume (read me first)
+
+If you are an agent picking this project up:
+
+1. **Read `STATUS.md`** in the repo root — the one-page checkpoint snapshot.
+   It has the milestone status, source map, HTTP surface, design rules in
+   force, and a step-by-step "verify the project is healthy" command list.
+2. **Run `cargo test`** to confirm the 55/55 baseline. If anything is red,
+   stop and ask what changed.
+3. **Then read this file** — Episodic / Semantic / Procedural — for the
+   deeper context behind every decision.
+4. For the locked design plan, read `pietro.md`. §19 has milestone status,
+   §20 has all six open questions resolved, and the rest is unchanged from
+   when it was written.
+
+What's next: **M6 — React UI**. The backend is feature-complete; the UI is
+the next chunk. See §14 of `pietro.md` and the "What's next" section of
+`STATUS.md`.
 
 ## Episodic
 - 2026-05-14: User asked PeakBot to plan **Pietro**, a Rust-based authenticated API proxy with a React UI bundled in a single binary, OIDC login, and YAML config. PeakBot researched state of the art (axum, reqwest, openidconnect, rust-embed, sqlx/SQLite, BLAKE3, axum-extra cookies), applied the Zen of Software Engineering skill, and wrote `pietro.md` with a detailed design plan. No code yet — plan is locked first by Zen rule "no code before the plan is locked".
