@@ -15,6 +15,7 @@ mod config;
 mod db;
 mod errors;
 mod keys;
+mod proxy;
 mod routes;
 mod secret;
 
@@ -121,6 +122,11 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
     let pepper = config::decode_key_material(cfg.api_key_pepper.expose())
         .context("decoding api_key_pepper")?;
 
+    // M5: separate HTTP client for the proxy (different timeout + redirect
+    // policy from the OIDC client) and a shared usage batcher.
+    let proxy_client = proxy::build_client().context("building proxy http client")?;
+    let proxy_usage = Arc::new(proxy::UsageBatcher::default());
+
     let state = AppState {
         config: Arc::new(cfg),
         pool,
@@ -128,16 +134,37 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
         cookie_secure,
         oidc: Arc::new(oidc),
         pepper: Arc::new(pepper),
+        proxy_client,
+        proxy_usage: proxy_usage.clone(),
     };
+
+    // Background task: drain the usage batcher every 30s and on shutdown.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let usage_pool = state.pool.clone();
+    let usage_handle = tokio::spawn(async move {
+        proxy::run_usage_flusher(proxy_usage, usage_pool, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await;
+    });
+
     let listener = TcpListener::bind(&state.config.listen)
         .await
         .with_context(|| format!("binding {}", state.config.listen))?;
     let app = build_router(state);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("axum server error")?;
+    axum::serve(
+        listener,
+        // ConnectInfo so the proxy can read the peer address (§12 XFF).
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("axum server error")?;
+
+    // Tell the usage flusher to drain once more, then wait for it.
+    let _ = shutdown_tx.send(());
+    let _ = usage_handle.await;
     info!("pietro shut down cleanly");
     Ok(())
 }

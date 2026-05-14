@@ -41,6 +41,10 @@ sqlx = { version = "0.8", default-features = false, features = [
 openidconnect = "4"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
+    # `stream` re-enables Body::wrap_stream and Response::bytes_stream,
+    # which the proxy forwarder (§12) needs to pipe bodies through without
+    # buffering.
+    "stream",
 ] }
 # `cookie` + `cookie-signed` give us SignedCookieJar (one signed cookie
 # carrying the session id — see §10 of pietro.md). We also depend on `cookie`
@@ -62,6 +66,9 @@ rand = "0.8"
 blake3 = "1"
 # Timestamp arithmetic that doesn't drag in chrono.
 time = { version = "0.3", features = ["formatting", "parsing"] }
+# Stream adapters for the proxy (M5). axum + reqwest both pull this in
+# transitively, so adding it directly costs us nothing.
+futures-util = { version = "0.3", default-features = false }
 
 [profile.release]
 lto = "thin"

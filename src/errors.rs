@@ -28,10 +28,8 @@ pub enum Error {
     #[error("bad request: {0}")]
     BadRequest(&'static str),
     #[error("upstream timed out")]
-    #[allow(dead_code, reason = "consumed by M5 proxy handler")]
     UpstreamTimeout,
     #[error("upstream unreachable")]
-    #[allow(dead_code, reason = "consumed by M5 proxy handler")]
     UpstreamUnreachable,
     #[error("internal: {0}")]
     Internal(#[from] anyhow::Error),

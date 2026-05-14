@@ -301,7 +301,6 @@ pub struct VerifiedKey {
 /// index). Per §11.3 we BLAKE3-hash with the pepper *before* the query so
 /// the DB sees only the hash — an attacker with read-only DB access can't
 /// use stolen rows without the pepper.
-#[allow(dead_code, reason = "consumed by the M5 proxy handler")]
 pub async fn verify(
     pool: &SqlitePool,
     pepper: &[u8],
@@ -334,7 +333,6 @@ pub async fn verify(
 /// should be batched to avoid serialising the proxy on a write lock. M5
 /// will introduce the batcher; for now we expose the underlying primitive
 /// so M5 only has to write the buffer-and-flush loop.
-#[allow(dead_code, reason = "consumed by the M5 proxy handler")]
 pub async fn mark_used(pool: &SqlitePool, key_id: &str, when: SystemTime) -> Result<(), Error> {
     let secs = when
         .duration_since(UNIX_EPOCH)

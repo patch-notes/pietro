@@ -46,6 +46,12 @@ pub struct AppState {
     /// API-key pepper, decoded from `cfg.api_key_pepper` once at startup.
     /// Held as `Arc<Vec<u8>>` so cloning the state stays cheap.
     pub pepper: Arc<Vec<u8>>,
+    /// HTTP client used by the proxy forwarder (M5). Separate from the
+    /// OIDC client because the two have different timeout + redirect
+    /// policies.
+    pub proxy_client: reqwest::Client,
+    /// Shared usage batcher consumed by the proxy hot path.
+    pub proxy_usage: Arc<crate::proxy::UsageBatcher>,
 }
 
 // Lets axum-extra extract the signing key from AppState (see
@@ -66,6 +72,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/login", get(oidc::login))
         .route("/api/auth/callback", get(oidc::callback))
         .route("/api/auth/logout", post(oidc::logout))
+        // The proxy catches every method via `any`. Wildcard `{*path}`
+        // captures the rest of the URL after `/proxy/{service_id}/`.
+        .route(
+            "/proxy/{service_id}/{*path}",
+            axum::routing::any(crate::proxy::forward),
+        )
         .with_state(state)
 }
 
@@ -269,6 +281,8 @@ services:
             cookie_secure: false,
             oidc,
             pepper: Arc::new(pepper),
+            proxy_client: reqwest::Client::new(),
+            proxy_usage: Arc::new(crate::proxy::UsageBatcher::default()),
         }
     }
 
@@ -413,6 +427,8 @@ services:
             cookie_secure: false,
             oidc: Arc::new(oidc),
             pepper: Arc::new(pepper),
+            proxy_client: reqwest::Client::new(),
+            proxy_usage: Arc::new(crate::proxy::UsageBatcher::default()),
         };
         let app = build_router(state);
 
@@ -750,5 +766,225 @@ services:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    // --- M5: proxy ---------------------------------------------------------
+
+    /// Spin up a wiremock server, point a one-service config at it, mint a
+    /// real key via `keys::mint`, then drive the full forwarder through the
+    /// router. This is the meaningful acceptance test: end-to-end auth →
+    /// header injection → upstream call → response stream-back.
+    async fn proxy_app_with_upstream(
+        upstream_uri: &str,
+        auth_block: &str,
+    ) -> (AppState, axum::Router, String) {
+        let yaml = format!(
+            r#"
+listen: "0.0.0.0:8080"
+public_url: "http://localhost:8080"
+database_path: ":memory:"
+cookie_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+api_key_pepper: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+oidc:
+  issuer_url: "http://localhost:9999"
+  client_id: "pietro"
+  client_secret: "shhh"
+services:
+  - id: "openai"
+    display_name: "OpenAI"
+    upstream_url: "{upstream_uri}"
+    auth:
+{auth_block}
+"#,
+        );
+        let cfg = Config::from_yaml_str(&yaml).unwrap();
+        let pool = crate::db::connect(":memory:").await.unwrap();
+        let key_bytes = crate::config::decode_key_material(cfg.cookie_key.expose()).unwrap();
+        let cookie_key = Key::derive_from(&key_bytes);
+        let pepper = crate::config::decode_key_material(cfg.api_key_pepper.expose()).unwrap();
+        let oidc = Arc::new(OidcState {
+            client: build_offline_oidc_client(),
+            http: reqwest::Client::new(),
+            scopes: cfg.oidc.scopes.clone(),
+            allowed_email_domains: cfg.oidc.allowed_email_domains.clone(),
+        });
+
+        // Seed a user and mint a real key for them via the keys module.
+        sqlx::query("INSERT INTO users (id, email) VALUES ('u', 'u@example.com')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let minted = crate::keys::mint(&pool, &pepper, "u", "openai", "laptop")
+            .await
+            .unwrap();
+        let plaintext = minted.plaintext.expose().to_string();
+
+        let state = AppState {
+            config: Arc::new(cfg),
+            pool,
+            cookie_key,
+            cookie_secure: false,
+            oidc,
+            pepper: Arc::new(pepper),
+            proxy_client: reqwest::Client::new(),
+            proxy_usage: Arc::new(crate::proxy::UsageBatcher::default()),
+        };
+        let app = build_router(state.clone());
+        (state, app, plaintext)
+    }
+
+    /// Helpers to drive the proxy with `ConnectInfo` populated (axum's
+    /// `Router::oneshot` doesn't carry a real peer otherwise).
+    fn proxy_request(
+        method: &str,
+        path: &str,
+        bearer: Option<&str>,
+        body: Body,
+    ) -> Request<Body> {
+        let mut b = Request::builder().method(method).uri(path);
+        if let Some(t) = bearer {
+            b = b.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        // axum's `ConnectInfo<SocketAddr>` extractor reads from request
+        // extensions; insert one so the handler sees a peer.
+        let mut req = b.body(body).unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::connect_info::ConnectInfo::<std::net::SocketAddr>(
+                "203.0.113.7:55555".parse().unwrap(),
+            ));
+        req
+    }
+
+    #[tokio::test]
+    async fn proxy_forwards_with_injected_bearer_and_strips_caller_header() {
+        let upstream = wiremock::MockServer::start().await;
+        let upstream_uri = upstream.uri();
+        // Upstream demands the operator's bearer, not the caller's.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/echo"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer sk-OPERATOR",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("x-upstream-marker", "alive")
+                    .set_body_string(r#"{"hello":"world"}"#),
+            )
+            .mount(&upstream)
+            .await;
+
+        let auth = "      kind: bearer\n      value: \"sk-OPERATOR\"";
+        let (_state, app, bearer) = proxy_app_with_upstream(&upstream_uri, auth).await;
+        let resp = app
+            .oneshot(proxy_request("GET", "/proxy/openai/v1/echo", Some(&bearer), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Response headers passed through except hop-by-hop.
+        assert_eq!(
+            resp.headers().get("x-upstream-marker").unwrap().to_str().unwrap(),
+            "alive"
+        );
+        // Body streamed through verbatim.
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], br#"{"hello":"world"}"#);
+    }
+
+    #[tokio::test]
+    async fn proxy_rejects_unknown_service_with_404() {
+        let upstream = wiremock::MockServer::start().await;
+        let auth = "      kind: bearer\n      value: \"sk-X\"";
+        let (_s, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        // /proxy/ghost/... → 404 because no such service is configured.
+        let resp = app
+            .oneshot(proxy_request("GET", "/proxy/ghost/v1/x", Some(&bearer), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn proxy_missing_bearer_returns_401() {
+        let upstream = wiremock::MockServer::start().await;
+        let auth = "      kind: bearer\n      value: \"sk-X\"";
+        let (_s, app, _bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        let resp = app
+            .oneshot(proxy_request("GET", "/proxy/openai/v1/x", None, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn proxy_revoked_key_returns_401() {
+        let upstream = wiremock::MockServer::start().await;
+        let auth = "      kind: bearer\n      value: \"sk-X\"";
+        let (state, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        // Revoke the freshly-minted key directly in the DB.
+        sqlx::query("UPDATE api_keys SET revoked_at = datetime('now')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(proxy_request("GET", "/proxy/openai/v1/x", Some(&bearer), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn proxy_propagates_upstream_status_and_body() {
+        let upstream = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/echo"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(418)
+                    .set_body_string("teapot"),
+            )
+            .mount(&upstream)
+            .await;
+        let auth = "      kind: bearer\n      value: \"sk-X\"";
+        let (_s, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        let resp = app
+            .oneshot(proxy_request(
+                "POST",
+                "/proxy/openai/echo",
+                Some(&bearer),
+                Body::from("anything"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::IM_A_TEAPOT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"teapot");
+    }
+
+    #[tokio::test]
+    async fn proxy_injects_query_param_auth() {
+        let upstream = wiremock::MockServer::start().await;
+        // Upstream requires `?api_key=OP_K`. The caller did not supply it.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search"))
+            .and(wiremock::matchers::query_param("api_key", "OP_K"))
+            .and(wiremock::matchers::query_param("q", "hi"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("found"))
+            .mount(&upstream)
+            .await;
+        let auth = "      kind: query\n      param: \"api_key\"\n      value: \"OP_K\"";
+        let (_s, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        let resp = app
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai/search?q=hi",
+                Some(&bearer),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"found");
     }
 }

@@ -37,6 +37,13 @@ impl ServiceId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Test-only constructor. Bypasses the regex check — only call this in
+    /// tests where the input is a literal that's obviously valid.
+    #[cfg(test)]
+    pub fn from_str_for_tests(s: &str) -> Self {
+        Self(s.to_string())
+    }
 }
 
 impl std::fmt::Display for ServiceId {
