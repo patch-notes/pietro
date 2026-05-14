@@ -10,6 +10,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod auth;
 mod config;
 mod db;
 mod errors;
@@ -102,9 +103,23 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
         .await
         .context("opening database")?;
 
+    // M3: derive cookie signing key, infer secure-flag from public_url, run
+    // OIDC discovery exactly once. Failure here aborts startup (§8: no
+    // partial startup).
+    let key_bytes = config::decode_key_material(cfg.cookie_key.expose())
+        .context("decoding cookie_key")?;
+    let cookie_key = axum_extra::extract::cookie::Key::derive_from(&key_bytes);
+    let cookie_secure = cfg.public_url.scheme() == "https";
+    let oidc = auth::oidc::OidcState::from_config(&cfg)
+        .await
+        .context("OIDC discovery / client init")?;
+
     let state = AppState {
         config: Arc::new(cfg),
         pool,
+        cookie_key,
+        cookie_secure,
+        oidc: Arc::new(oidc),
     };
     let listener = TcpListener::bind(&state.config.listen)
         .await

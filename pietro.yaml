@@ -17,7 +17,7 @@ cookie_key: "${PIETRO_COOKIE_KEY}"
 api_key_pepper: "${PIETRO_API_KEY_PEPPER}"
 
 oidc:
-  issuer_url: "http://localhost:9000/realms/main"
+  issuer_url: "http://127.0.0.1:19000/"
   client_id: "pietro"
   client_secret: "${PIETRO_OIDC_CLIENT_SECRET}"
   allowed_email_domains: ["example.com"]

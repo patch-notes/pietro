@@ -313,28 +313,39 @@ fn check_key_material(name: &str, value: &str) -> anyhow::Result<()> {
 /// length. We don't need to actually use the bytes here — just verify there
 /// are enough of them.
 fn decoded_len(s: &str) -> usize {
-    if let Some(n) = try_hex_len(s) {
-        return n;
-    }
-    if let Some(n) = try_base64_len(s) {
-        return n;
-    }
-    s.len()
+    decode_key_material(s).map(|v| v.len()).unwrap_or(s.len())
 }
 
-fn try_hex_len(s: &str) -> Option<usize> {
+/// Decode a config key-material string (hex, base64, or raw bytes) to bytes.
+/// Used at startup to turn `cookie_key` / `api_key_pepper` into the byte
+/// arrays the cookie-signing and key-hashing layers actually want.
+///
+/// Tries hex first (deterministic), then base64 (standard and URL-safe), then
+/// falls back to the raw bytes. Returns `None` only if every attempt yields
+/// something shorter than the input could plausibly be — never silently
+/// truncates.
+pub fn decode_key_material(s: &str) -> Option<Vec<u8>> {
+    if let Some(bytes) = try_hex(s) {
+        return Some(bytes);
+    }
+    if let Some(bytes) = try_base64(s) {
+        return Some(bytes);
+    }
+    Some(s.as_bytes().to_vec())
+}
+
+fn try_hex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 || s.is_empty() {
         return None;
     }
-    if s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(s.len() / 2)
-    } else {
-        None
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
     }
+    hex::decode(s).ok()
 }
 
-fn try_base64_len(s: &str) -> Option<usize> {
-    // RFC 4648 alphabet (+/=) or URL-safe (-_=). No newlines tolerated.
+fn try_base64(s: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
     if s.is_empty() {
         return None;
     }
@@ -344,10 +355,10 @@ fn try_base64_len(s: &str) -> Option<usize> {
     if !ok {
         return None;
     }
-    let pad = s.bytes().rev().take_while(|b| *b == b'=').count();
-    let body = s.len().saturating_sub(pad);
-    // 4 base64 chars => 3 bytes
-    Some(body * 3 / 4)
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(s))
+        .ok()
 }
 
 // -- tests -------------------------------------------------------------------
@@ -403,6 +414,18 @@ mod tests {
         let cfg = Config::try_from(raw).unwrap();
         assert_eq!(cfg.services.len(), 1);
         assert_eq!(cfg.services[0].id.as_str(), "openai");
+    }
+
+    #[test]
+    fn decode_key_material_round_trips_hex_and_base64() {
+        // 32 zero bytes, encoded three ways. All decode to the same bytes.
+        let want = vec![0u8; 32];
+        let hex_str = "0".repeat(64);
+        let b64_str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert_eq!(decode_key_material(&hex_str).unwrap(), want);
+        assert_eq!(decode_key_material(b64_str).unwrap(), want);
+        // Raw ASCII falls through: bytes returned as-is.
+        assert_eq!(decode_key_material("hello").unwrap(), b"hello".to_vec());
     }
 
     fn sample_yaml() -> &'static str {

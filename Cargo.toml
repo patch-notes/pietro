@@ -34,6 +34,29 @@ sqlx = { version = "0.8", default-features = false, features = [
     "migrate",
 ] }
 
+# OIDC + sessions (M3+)
+# `openidconnect` 4.x ships its own oauth2 5.x; we use the async-reqwest path.
+# `reqwest` is configured with rustls-tls and `redirect::Policy::none()` per
+# the upstream SSRF guidance.
+openidconnect = "4"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+] }
+# `cookie` + `cookie-signed` give us SignedCookieJar (one signed cookie
+# carrying the session id — see §10 of pietro.md). We also depend on `cookie`
+# directly with `key-expansion` enabled — axum-extra re-exports `Key` but
+# doesn't turn on the HKDF helpers we need (`Key::derive_from`).
+axum-extra = { version = "0.12", features = ["cookie", "cookie-signed"] }
+cookie = { version = "0.18", features = ["key-expansion"] }
+serde_json = "1"
+# Encode/decode helpers used by the OIDC flow and config key material.
+base64 = "0.22"
+hex = "0.4"
+# Constant-time-ish encoding for our internal random IDs.
+rand = "0.8"
+# Timestamp arithmetic that doesn't drag in chrono.
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -42,3 +65,5 @@ strip = true
 [dev-dependencies]
 # For `ServiceExt::oneshot` in router integration tests.
 tower = { version = "0.5", features = ["util"] }
+# Fake OIDC issuer + (later) fake upstream services for integration tests.
+wiremock = "0.6"
