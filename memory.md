@@ -17,8 +17,10 @@ If you are an agent picking this project up:
    §20 has all six open questions resolved, and the rest is unchanged from
    when it was written.
 
-What's next: **M6 — React UI**. The backend is feature-complete; the UI is
-the next chunk. See §14 of `pietro.md` and the "What's next" section of
+What's next: **M7 — Embed + release**. The backend is feature-complete; the
+React UI is feature-complete (243 KB / 77 KB gz). All that's left is
+bundling `frontend/dist/` into the binary with `rust-embed` and shipping a
+musl release. See §13 of `pietro.md` and the "What's next" section of
 `STATUS.md`.
 
 ## Episodic
@@ -29,6 +31,14 @@ the next chunk. See §14 of `pietro.md` and the "What's next" section of
 - 2026-05-14 (M3 build): openidconnect 4.0.1, reqwest 0.12 rustls-tls, axum-extra 0.12 (cookie+cookie-signed), cookie 0.18 `key-expansion` (axum-extra doesn't enable it). `src/auth/` with `OidcState::from_config` (discovery at startup, fail fast), AuthenticatedUser extractor, full PKCE+state+nonce flow, email allowlist, user upsert, session creation, per-cookie logout. errors.rs gets IntoResponse with the single JSON shape. 24/24 tests. **Pinned**: openidconnect 4.x's `CoreClient` produced by `from_provider_metadata` carries `EndpointMaybeSet` parameters that can't be reconstructed via `CoreClient::new + setters` — tests must build the offline client through `from_provider_metadata` with a hand-built `CoreProviderMetadata`.
 - 2026-05-14 (M4 build): blake3 1, base32 0.5 (Crockford). `src/keys.rs` ApiKey/ApiKeyHash/KeyId newtypes + mint/list/revoke/verify + plaintext-once contract + 409 on dup via partial unique index. Four new routes (`/api/services`, `GET|POST /api/keys`, `DELETE /api/keys/{id}`) all session-guarded. Router tests sign the cookie via `cookie::CookieJar::signed_mut` — no test-only auth bypass. Live-server smoke confirms 401+JSON on every M4 endpoint unauth. 40/40 tests. **Pinned**: `pkill -f target/debug/pietro` before each smoke run; stale binaries are confusing.
 - 2026-05-14 (M5 build): futures-util + reqwest `stream` feature. `src/proxy.rs` is the entire forwarder: hop-by-hop strip (RFC 7230 §6.1 plus dynamic names from inbound `Connection:`), session-cookie carve-out from `Cookie:`, three auth-injection modes (bearer/header/query) with overwrite-and-warn (values never logged, set sensitive on inserted HeaderValue), XFF chain via `ConnectInfo<SocketAddr>`, both directions streamed (request via `reqwest::Body::wrap_stream(BodyDataStream)`, response via `bytes_stream()` → `axum::Body::from_stream`), reqwest error mapping (timeout→504, connect→502, other→502). Background `UsageBatcher` flushes `HashMap<KeyId, SystemTime>` every 30 s + on shutdown via `tokio::oneshot`. Route mounted with `axum::routing::any` on `/proxy/{service_id}/{*path}`. `into_make_service_with_connect_info` in main.rs gives the handler the peer addr. 55/55 tests including 6 wiremock-driven integration tests that mint a real key and drive the full forwarder. Q4 resolved (trust immediate peer). **Pinned**: in axum 0.8 the `Body::wrap_stream` / `Response::bytes_stream` reqwest APIs are gated behind the `stream` feature; default-features=false hides them. Tests inject `ConnectInfo<SocketAddr>` via `req.extensions_mut().insert(...)` because `Router::oneshot` doesn't carry a peer.
+- 2026-05-14 (M6 prep): user requested `cargo fmt` + `cargo clippy -D warnings` gating each future step. First run revealed M5 had shipped with 1 rustfmt drift in `src/routes.rs` and 7 clippy lints across `src/config.rs`, `src/db.rs`, `src/proxy.rs` (manual_is_multiple_of, doc_overindented_list_items×2, unnecessary_to_owned, collapsible_if×2 via let-chains, nonminimal_bool→is_none_or). Cleanup commit `e72bb5a` also dropped a vestigial dead `build_upstream_url(..., "search?q=hi", None).unwrap()` call from the URL test — the second realistic call in the same test was always the one doing the work. Clean baseline established before any UI code touched.
+- 2026-05-14 (M6 build, 6 small commits, one per page/feature):
+  - **Step 2** wired `@tailwindcss/vite` plugin + Vite dev-proxy for `/api`, `/proxy` → `http://127.0.0.1:18080` in `vite.config.ts`. `src/index.css` collapsed to one line: `@import "tailwindcss";`. Vite-template demo (App.tsx + App.css) replaced with a Tailwind-using placeholder.
+  - **Step 3** added `react-router-dom@^7` (one runtime dep). `src/api.ts`: 110-line typed fetch wrapper with `ApiError` parsing the project's `{ error: { code, message } }` envelope, plus `Me`/`Service`/`ApiKey`/`MintedKey` types verified against `src/routes.rs` + `src/keys.rs:KeyRecord`. `App.tsx`: BrowserRouter + three-state session probe (`loading | out | in`) + `RequireAuth` guard. The three pages started as stubs.
+  - **Step 4** `/login`: single `<a href="/api/auth/login">` — not a fetch, because fetch would break the 303→IdP chain. Tailwind card; light+dark.
+  - **Step 5** `/` dashboard: lists `/api/keys` (renders revoked rows too, dim'd with badge — the backend's list query has no `revoked_at IS NULL` filter, so honest rendering), optimistic-revoke that flips the row in place and refetches on error, header with email + sign-out button. Hit React 19's new `react-hooks/set-state-in-effect` lint — fixed by inlining the mount-time load into `.then/.catch` with a `cancelled` flag (matching `App.tsx`'s pattern). Kept the named `refresh()` helper only for the post-revoke repair path.
+  - **Step 6** `/new` mint flow: two phases on one component. Form (service dropdown + 128-char-capped label input) → reveal phase with prominent amber banner, monospace plaintext block, `navigator.clipboard.writeText` with a `document.createRange` selection fallback for insecure contexts, and an explicit "I've saved it" link instead of auto-redirect. The plaintext-once contract is enforced by UX, not by JS state — a refresh just drops it.
+  - **Step 7** sweep: removed orphaned Vite-template assets (`hero.png`, `react.svg`, `vite.svg`, `icons.svg`), renamed `<title>` to "Pietro". Live end-to-end smoke confirmed: SPA served by Vite at `:5174` (it auto-picked because :5173 was busy), `/api/me` and `/api/keys` proxied through and returning 401-with-JSON, `/api/auth/login` 303s through to the IdP with full PKCE+state+nonce in the URL, `/proxy/openai/v1/x` 401s through. Final bundle: 243 KB JS / 77 KB gzipped — well under the §14.2 200 KB-gz target. 55/55 Rust tests still green. **Pinned for M6**: (a) Vite binds `[::1]` (IPv6 loopback) by default, so curl `127.0.0.1:5174` fails; use `localhost` or `[::1]`. (b) React 19's `react-hooks/set-state-in-effect` is conservative — it fires if the effect calls a named function that contains setState; refactor mount-time loads into inline `.then/.catch` with a `cancelled` flag.
 
 ## Semantic (facts about this project)
 - **Name**: Pietro (Saint Peter, keeper of the keys).
@@ -63,8 +73,9 @@ the next chunk. See §14 of `pietro.md` and the "What's next" section of
 
 ## Procedural (how-to for this project)
 - Before adding any new feature, re-read §2 in `pietro.md`. YAGNI hard.
-- Crates budget: 25 max. After M5 we sit at 23 prod + 2 dev = 25 (at the budget — be deliberate about any future addition).
+- Crates budget: 25 max. After M5 we sit at 23 prod + 2 dev = 25 (at the budget — be deliberate about any future addition). Frontend runtime budget: 3 npm deps (`react`, `react-dom`, `react-router-dom`); a fourth needs explicit justification.
 - Plan first. Confirm. Then code. Never start implementation while open questions in §20 are unanswered.
+- **Gate every change** with `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`. For frontend changes also run `npm run lint` and `npm run build`. This was retrofitted after M5 — never let drift accumulate again.
 - All mutating handlers go through `errors::Error::into_response`. Never hand-roll an alternate JSON shape.
 - API keys must never appear in logs. `ApiKey`, `MintedKey::Debug`, `Secret<T>::Debug` all redact. Operator credentials injected into headers are marked `set_sensitive(true)` so any future header-walking logging is also safe. The OIDC handler logs `***@domain` for emails.
 - Migrations are append-only, numbered, embedded. Never edit a shipped migration.
@@ -99,5 +110,5 @@ All resolved as of 2026-05-14 M5 ship. See §20 of `pietro.md`.
 - [x] **M3 — OIDC login.** 24/24 tests.
 - [x] **M4 — Key lifecycle.** 40/40 tests.
 - [x] **M5 — Proxy.** 55/55 tests. Streaming forwarder, three auth modes, hop-by-hop strip, XFF, usage batcher.
-- [ ] M6 — React UI.
+- [x] **M6 — React UI.** 243 KB JS / 77 KB gz. Three pages (`/`, `/new`, `/login`), Tailwind v4, react-router v7, typed fetch wrapper, three-state session probe + `RequireAuth`, optimistic revoke, plaintext-once reveal with copy + acknowledged exit. Rust still 55/55.
 - [ ] M7 — Embed + release.

@@ -1,4 +1,4 @@
-# Pietro — Current State (checkpoint 2026-05-14)
+# Pietro — Current State (checkpoint 2026-05-14, M6)
 
 > One-page resumption snapshot. For deep context read `pietro.md` (the design
 > plan, locked) and `memory.md` (the agent memory). For day-to-day work, this
@@ -6,9 +6,12 @@
 
 ## TL;DR
 
-Five of seven milestones shipped. The backend is feature-complete for v1.
-What remains is the UI (M6) and packaging (M7). The test suite is **55/55
-green**, no compiler warnings, no half-states, no open design questions.
+Six of seven milestones shipped. The backend is feature-complete; the React
+UI is feature-complete. What remains is packaging (M7 — embed the
+`frontend/dist/` into the binary). The test suite is **55/55 green** on
+the Rust side; the frontend is lint-clean (eslint, tsc) and build-clean
+(`vite build` → 243 KB JS / 77 KB gzipped, under the §14.2 200 KB-gz
+target).
 
 ```
 ✅ M1 — Skeleton          (9 tests)
@@ -16,7 +19,7 @@ green**, no compiler warnings, no half-states, no open design questions.
 ✅ M3 — OIDC login        (24 tests)
 ✅ M4 — Key lifecycle     (40 tests)
 ✅ M5 — Proxy             (55 tests)
-⬜ M6 — React UI
+✅ M6 — React UI          (243 KB JS / 77 KB gz)
 ⬜ M7 — Embed + release
 ```
 
@@ -27,10 +30,17 @@ fresh `cargo run -- migrate --config pietro.yaml` recreates them.
 
 ```bash
 cd /var/home/exe/workz/pietro
-cargo build           # → clean, no warnings
-cargo test            # → 55 passed; 0 failed
-git status            # → nothing to commit
-git log --oneline     # → 6 commits, one per milestone (+ one doc commit)
+cargo fmt --all -- --check    # → clean
+cargo clippy --all-targets --all-features -- -D warnings  # → clean
+cargo build                   # → clean
+cargo test                    # → 55 passed; 0 failed
+
+cd frontend
+npm run lint                  # → clean
+npm run build                 # → clean; bundle under 200 KB gz
+
+git status                    # → nothing to commit
+git log --oneline             # → ~15 commits, one per milestone + per M6 step
 ```
 
 ## Run it end to end (no real IdP needed)
@@ -80,7 +90,13 @@ callback path with a real Keycloak.
 | `src/routes.rs` | Router assembly + all handlers (`/healthz`, `/api/auth/*`, `/api/me`, `/api/services`, `/api/keys*`, `/proxy/...`) + `AppState` | every milestone |
 | `migrations/0001_init.sql` | Three tables + the partial unique index that enforces Q5 | M2; **never edit, only append** |
 | `scripts/fake-idp.py` | Dev-only IdP stub (discovery + empty JWKS) — not for prod | M3 |
-| `frontend/` | Vite + React + TS scaffold, Tailwind v4 wired into vite.config.ts. Not yet a real UI. | M1 bootstrap |
+| `frontend/vite.config.ts` | `@tailwindcss/vite` plugin + dev-proxy for `/api` and `/proxy` → `:18080` | M6 |
+| `frontend/src/index.css` | One line: `@import "tailwindcss";` — the entire CSS toolchain | M6 |
+| `frontend/src/api.ts` | Typed fetch wrapper + `ApiError` envelope parser + endpoint helpers | M6 |
+| `frontend/src/App.tsx` | Router + three-state session probe (`loading | out | in`) + `RequireAuth` guard | M6 |
+| `frontend/src/pages/Login.tsx` | `<a href="/api/auth/login">` splash | M6 |
+| `frontend/src/pages/Dashboard.tsx` | List keys (active + revoked, dim'd), optimistic revoke, sign-out | M6 |
+| `frontend/src/pages/NewKey.tsx` | Mint form → plaintext-once reveal with copy + acknowledged exit | M6 |
 
 ## HTTP surface (what's live today)
 
@@ -127,23 +143,29 @@ Read `pietro.md` for the full statement. Quick reference:
 - **M7** — `rust-embed` (+1, takes us to 24 prod). Anything beyond that
   needs explicit budget justification.
 
-## What's next: M6 — React UI
+## Frontend npm dep budget
 
-Three pages (`/`, `/new`, `/login`) per §14, fetch wrapper, login redirect on
-401. Builds via Vite into `frontend/dist/`. The backend HTTP surface above is
-exactly the shape the UI needs. Until M7 nothing touches Rust.
+Runtime: `react`, `react-dom`, `react-router-dom`. **Three.** Adding a
+fourth needs explicit justification — the moment a state-management or
+form library shows up, ask first.
 
-When you start M6, the entry points are:
-- `frontend/src/main.tsx` (Vite template; replace the demo App)
-- `frontend/src/App.tsx`
-- `frontend/vite.config.ts` (already has Tailwind v4 plugin wired)
-- `frontend/src/index.css` (`@import "tailwindcss";`)
+## What's next: M7 — Embed + release
 
-Run `cd frontend && npm run dev` for the dev server on :5173. It already
-proxies `/api/*` and `/proxy/*` to the Rust backend on :18080 per the
-config in `vite.config.ts` — wait, actually that's the *plan*. Check
-`vite.config.ts` before relying on it; the proxy may need to be wired up
-as part of M6's first task.
+§13 has the embed plan in detail. Short version:
+- Add `rust-embed = "8"` (the budget allows for this one and only this one).
+- New module `src/spa.rs`: handler that serves `frontend/dist/{path}` from
+  the embedded archive, with `index.html` as SPA fallback for any
+  non-`/api/*`, non-`/proxy/*` route.
+- `build.rs` checks `frontend/dist/index.html` exists and fails the build
+  with a friendly message if not (`cd frontend && npm run build`).
+- Dev-mode notice page when `frontend/dist/` is missing — currently the
+  README mentions Vite on `:5173`, but Vite picked `:5174` here when
+  `:5173` was busy; the dev notice should be hostname-agnostic.
+- `release` profile in `Cargo.toml` already tuned (M1). Add a tiny
+  `.github/workflows/release.yml` that builds a musl static binary on tag
+  push.
+
+Until M7 nothing touches the React code. The HTTP surface is frozen.
 
 ## Notes for the agent picking this up
 
