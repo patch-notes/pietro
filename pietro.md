@@ -848,27 +848,39 @@ and the original gets logged via `tracing::error!` with the request_id span.
 Each milestone ends with the binary running and demonstrable. No half-states
 shipped.
 
-1. **M1 — Skeleton (1 day).** axum hello-world, clap CLI, YAML config load with validation, `/healthz`. Single binary builds.
-2. **M2 — DB + migrations (½ day).** sqlx + SQLite, migrations baked in. Empty `users` / `sessions` / `api_keys` tables. CLI `pietro migrate`.
-3. **M3 — OIDC login (2 days).** `/api/auth/login`, `/api/auth/callback`, `/api/auth/logout`, session cookie, `/api/me`. Tested against a real Keycloak in docker-compose for the dev environment.
-4. **M4 — Key lifecycle (1 day).** `/api/services`, `/api/keys` CRUD. Plaintext-once contract enforced and tested.
-5. **M5 — Proxy (2 days).** `/proxy/:service/*path` with streaming, auth injection, hop-by-hop stripping. Tested with wiremock and against a real upstream (e.g. httpbin).
-6. **M6 — React UI (2-3 days).** Three pages, plain-CSS or tailwind, fetch wrapper, login redirect on 401. Built via Vite into `frontend/dist/`.
-7. **M7 — Embed + release (½ day).** `rust-embed`, SPA fallback handler, dev-mode notice page, musl release build, GitHub Actions release workflow.
+Status legend: ✅ shipped · 🟡 in progress · ⬜ not started.
+
+1. **M1 — Skeleton (1 day).** ✅ *Shipped 2026-05-14.* axum hello-world, clap CLI, YAML config load with validation, `/healthz`. Single binary builds. Tests: 9/9. Smoke-tested.
+2. **M2 — DB + migrations (½ day).** ✅ *Shipped 2026-05-14.* sqlx + SQLite, migrations baked in. `users` / `sessions` / `api_keys` tables with the partial unique index that enforces Q5. CLI `pietro migrate` is idempotent; `/healthz` upgraded to ping the pool. Tests: 11/11.
+3. **M3 — OIDC login (2 days).** ✅ *Shipped 2026-05-14.* `/api/auth/login` (PKCE + flow cookie), `/api/auth/callback` (state check, code exchange, ID token verify, email allowlist, user upsert, session creation), `/api/auth/logout` (DB delete + cookie clear), `/api/me` (session-guarded). `errors.rs` now implements `IntoResponse` with the project-wide JSON shape. Tests: 24/24 (includes a wiremock-based real-discovery test of the login redirect). The full callback round-trip is verified against `scripts/fake-idp.py` for smoke and is meant to be re-verified against Keycloak in docker-compose per this section's brief.
+4. **M4 — Key lifecycle (1 day).** ⬜ `/api/services`, `/api/keys` CRUD. Plaintext-once contract enforced and tested. 409 `key_already_exists` on duplicate per §11.2.
+5. **M5 — Proxy (2 days).** ⬜ `/proxy/:service/*path` with streaming, auth injection, hop-by-hop stripping. Tested with wiremock and against a real upstream (e.g. httpbin).
+6. **M6 — React UI (2-3 days).** ⬜ Three pages, Tailwind, fetch wrapper, login redirect on 401. Built via Vite into `frontend/dist/`.
+7. **M7 — Embed + release (½ day).** ⬜ `rust-embed`, SPA fallback handler, dev-mode notice page, musl release build, GitHub Actions release workflow.
 
 Total: ~10 working days for one engineer. If it takes more, something has
 been added that's not in this plan; pull it back out.
 
+### Progress log
+
+- **2026-05-14 — M1 shipped.** Bootstrapped via `cargo init` + `npm create vite@latest frontend -- --template react-ts` + Tailwind v4 (`@tailwindcss/vite`). 9/9 tests green.
+- **2026-05-14 — M2 shipped.** sqlx 0.8 (sqlite/macros/migrate, no TLS). `migrations/0001_init.sql` includes the partial unique index `api_keys_active_user_service_idx` for Q5. 11/11 tests green.
+- **2026-05-14 — M3 shipped.** openidconnect 4.0.1 + axum-extra 0.12 (cookie + cookie-signed) + cookie 0.18 (`key-expansion` — axum-extra doesn't enable it on its own). Wiremock + tiny `scripts/fake-idp.py` for smoke runs. 24/24 tests green. Notable scope decision logged here: the full code-exchange + ID-token-verification round-trip is not unit-tested by design (per §18's last bullet about honest smoke testing) — it's covered by Keycloak in docker-compose, not by minting signed JWTs in tests.
+
 ---
 
-## 20. Open questions (need an answer before M1 starts)
+## 20. Open questions (resolved + outstanding)
+
+The header used to read "need an answer before M1 starts." M1–M3 shipped on
+2026-05-14 with resolutions to all but one question; the remaining one (#4)
+is deferred to M5 where it actually matters.
 
 1. ~~**UI styling**: Tailwind or plain CSS modules?~~ **Resolved 2026-05-14: Tailwind v4, scaffolded via `npm create vite@latest -- --template react-ts`. See §14.1.**
 2. ~~**Service auth injection — header collisions**: overwrite, reject, or merge?~~ **Resolved 2026-05-14: overwrite and warn. See §12 "Header collisions".**
 3. ~~**OIDC `allowed_email_domains`** — is the email claim required, or do we also support `groups` / role-based allowlists in v1?~~ **Resolved 2026-05-14: email-only in v1. Groups deferred.**
 4. **Reverse proxy host**: should Pietro respect a configurable trusted proxy CIDR for `X-Forwarded-For` parsing, or always treat the immediate peer as the client? Default proposal: trust the immediate peer in v1, document running behind exactly one TLS terminator.
 5. ~~**Multiple keys per (user, service)**: allowed?~~ **Resolved 2026-05-14: exactly one *active* key per (user, service). Revoked keys do not block re-issue. See §9 and §11.2 for the partial-unique-index enforcement and the 409 contract.**
-6. **Logging out a single device vs. all sessions**: do we want "log out everywhere" in v1? Default proposal: no; logout is per-session-cookie. "Log out everywhere" is a v2 feature when you actually need it.
+6. ~~**Logging out a single device vs. all sessions**: do we want "log out everywhere" in v1?~~ **Resolved 2026-05-14 with M3 ship: per-cookie logout only. `/api/auth/logout` deletes exactly the session row referenced by the cookie. "Log out everywhere" stays a v2 feature.**
 
 ---
 
