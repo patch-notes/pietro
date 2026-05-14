@@ -6,6 +6,10 @@
 //!   * `GET /api/auth/callback`     — handle IdP callback.
 //!   * `POST /api/auth/logout`      — clear session.
 //!   * `GET /api/me`                — session-guarded; returns user info.
+//!   * `GET /api/services`          — list configured upstreams (no secrets).
+//!   * `GET /api/keys`              — list current user's keys.
+//!   * `POST /api/keys`             — mint a key; plaintext returned once.
+//!   * `DELETE /api/keys/:key_id`   — soft-revoke.
 //!
 //! Per §7 the entire app is one flat `axum::Router` — no nested apps.
 
@@ -13,12 +17,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{FromRef, State};
+use axum::extract::{FromRef, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum_extra::extract::cookie::Key;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::warn;
 
@@ -26,19 +30,22 @@ use crate::auth::oidc::{self, OidcState};
 use crate::auth::session::{AuthenticatedUser, UserId};
 use crate::config::Config;
 use crate::errors::Error;
+use crate::keys::{self, KeyId, KeyRecord};
 
 /// Application state shared across handlers. Cheap to clone (`Arc` for config
 /// and OIDC state, sqlx pool which is reference-counted internally, and a
 /// cookie `Key` which is a few bytes that `cookie` itself wraps in an Arc).
 #[derive(Clone)]
 pub struct AppState {
-    #[allow(dead_code, reason = "consumed by /api/services in M4")]
     pub config: Arc<Config>,
     pub pool: SqlitePool,
     pub cookie_key: Key,
     /// Whether to set the `Secure` flag on cookies (true iff `public_url` is https).
     pub cookie_secure: bool,
     pub oidc: Arc<OidcState>,
+    /// API-key pepper, decoded from `cfg.api_key_pepper` once at startup.
+    /// Held as `Arc<Vec<u8>>` so cloning the state stays cheap.
+    pub pepper: Arc<Vec<u8>>,
 }
 
 // Lets axum-extra extract the signing key from AppState (see
@@ -53,6 +60,9 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/me", get(me))
+        .route("/api/services", get(list_services))
+        .route("/api/keys", get(list_keys).post(mint_key))
+        .route("/api/keys/{key_id}", delete(revoke_key))
         .route("/api/auth/login", get(oidc::login))
         .route("/api/auth/callback", get(oidc::callback))
         .route("/api/auth/logout", post(oidc::logout))
@@ -101,6 +111,115 @@ async fn me(
     }))
 }
 
+// -- /api/services -----------------------------------------------------------
+
+#[derive(Serialize)]
+struct ServiceListItem {
+    id: String,
+    display_name: String,
+    description: Option<String>,
+}
+
+/// List the configured upstreams (§7). Returns id + human metadata only —
+/// **never** the upstream credential or upstream URL. The URL is internal
+/// implementation: callers don't need it because they talk to `/proxy/:svc`,
+/// not to the upstream directly.
+async fn list_services(
+    State(state): State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<ServiceListItem>> {
+    let items = state
+        .config
+        .services
+        .iter()
+        .map(|s| ServiceListItem {
+            id: s.id.as_str().to_string(),
+            display_name: s.display_name.clone(),
+            description: s.description.clone(),
+        })
+        .collect();
+    Json(items)
+}
+
+// -- /api/keys ---------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MintKeyRequest {
+    service_id: String,
+    label: String,
+}
+
+/// What we return on `POST /api/keys`. `plaintext` is the *only* time this
+/// value ever leaves the server — §11.2.
+#[derive(Serialize)]
+struct MintKeyResponse {
+    key_id: String,
+    /// **Show this once.** Calling clients should write it down or pipe it
+    /// to whatever secret manager they use.
+    plaintext: String,
+    prefix: String,
+    last4: String,
+    service_id: String,
+    label: String,
+}
+
+async fn list_keys(
+    State(state): State<AppState>,
+    AuthenticatedUser(UserId(user_id)): AuthenticatedUser,
+) -> Result<Json<Vec<KeyRecord>>, Error> {
+    let rows = keys::list_for_user(&state.pool, &user_id).await?;
+    Ok(Json(rows))
+}
+
+async fn mint_key(
+    State(state): State<AppState>,
+    AuthenticatedUser(UserId(user_id)): AuthenticatedUser,
+    Json(body): Json<MintKeyRequest>,
+) -> Result<(StatusCode, Json<MintKeyResponse>), Error> {
+    // Validate inputs at the boundary (§8 spirit, applied to API input too).
+    if body.label.trim().is_empty() {
+        return Err(Error::BadRequest("label must be non-empty"));
+    }
+    if body.label.len() > 128 {
+        return Err(Error::BadRequest("label must be <= 128 chars"));
+    }
+    if !state
+        .config
+        .services
+        .iter()
+        .any(|s| s.id.as_str() == body.service_id)
+    {
+        return Err(Error::BadRequest("unknown service_id"));
+    }
+
+    let minted =
+        keys::mint(&state.pool, &state.pepper, &user_id, &body.service_id, &body.label).await?;
+
+    let resp = MintKeyResponse {
+        key_id: minted.key_id.as_str().to_string(),
+        plaintext: minted.plaintext.expose().to_string(),
+        prefix: minted.prefix,
+        last4: minted.last4,
+        service_id: body.service_id,
+        label: body.label,
+    };
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+async fn revoke_key(
+    State(state): State<AppState>,
+    AuthenticatedUser(UserId(user_id)): AuthenticatedUser,
+    Path(key_id): Path<String>,
+) -> Result<StatusCode, Error> {
+    let key_id = KeyId::parse(&key_id)?;
+    let did_revoke = keys::revoke(&state.pool, &user_id, &key_id).await?;
+    if did_revoke {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +253,7 @@ services:
         let pool = crate::db::connect(":memory:").await.unwrap();
         let key_bytes = crate::config::decode_key_material(cfg.cookie_key.expose()).unwrap();
         let cookie_key = Key::derive_from(&key_bytes);
+        let pepper = crate::config::decode_key_material(cfg.api_key_pepper.expose()).unwrap();
 
         let oidc = Arc::new(OidcState {
             client: build_offline_oidc_client(),
@@ -148,6 +268,7 @@ services:
             cookie_key,
             cookie_secure: false,
             oidc,
+            pepper: Arc::new(pepper),
         }
     }
 
@@ -283,6 +404,7 @@ services:
         let pool = crate::db::connect(":memory:").await.unwrap();
         let key_bytes = crate::config::decode_key_material(cfg.cookie_key.expose()).unwrap();
         let cookie_key = Key::derive_from(&key_bytes);
+        let pepper = crate::config::decode_key_material(cfg.api_key_pepper.expose()).unwrap();
         let oidc = OidcState::from_config(&cfg).await.unwrap();
         let state = AppState {
             config: Arc::new(cfg),
@@ -290,6 +412,7 @@ services:
             cookie_key,
             cookie_secure: false,
             oidc: Arc::new(oidc),
+            pepper: Arc::new(pepper),
         };
         let app = build_router(state);
 
@@ -375,5 +498,257 @@ services:
             cookies.iter().any(|c| c.contains("pietro_session")),
             "logout should clear pietro_session: {cookies:?}"
         );
+    }
+
+    // --- M4: keys + services ---------------------------------------------
+
+    /// Seed a user + active session, return (state, app, session cookie
+    /// header value). Tests use the cookie to authenticate subsequent
+    /// requests through the real `AuthenticatedUser` extractor — no test-
+    /// only auth bypass.
+    async fn authed_app() -> (AppState, axum::Router, String) {
+        let state = dummy_state().await;
+
+        // Seed a user and a session row directly. The extractor only
+        // checks the session table; it doesn't care how the row got there.
+        sqlx::query("INSERT INTO users (id, email) VALUES ('u-test', 'u@example.com')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let session_id = crate::auth::session::new_session_id();
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, expires_at) \
+             VALUES (?, 'u-test', datetime('now', '+1 hour'))",
+        )
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        // Sign the cookie the same way the production handler would.
+        let mut jar = cookie::CookieJar::new();
+        jar.signed_mut(&state.cookie_key)
+            .add(cookie::Cookie::new(
+                crate::auth::session::SESSION_COOKIE,
+                session_id,
+            ));
+        let cookie_header = jar
+            .get(crate::auth::session::SESSION_COOKIE)
+            .expect("signed jar must hold the cookie")
+            .to_string();
+
+        let app = build_router(state.clone());
+        (state, app, cookie_header)
+    }
+
+    #[tokio::test]
+    async fn services_lists_configured_ids_without_secrets() {
+        let (_state, app, cookie) = authed_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.is_array(), "expected array, got {v}");
+        assert_eq!(v[0]["id"], "openai");
+        assert_eq!(v[0]["display_name"], "OpenAI");
+        // Hard contract: never expose upstream URLs or credential material.
+        assert!(v[0].get("upstream_url").is_none(), "leaked upstream_url");
+        assert!(v[0].get("auth").is_none(), "leaked auth block");
+        assert!(v[0].get("value").is_none(), "leaked credential value");
+    }
+
+    #[tokio::test]
+    async fn keys_list_requires_session() {
+        let app = build_router(dummy_state().await);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/keys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mint_returns_plaintext_once_and_409_on_dup() {
+        let (state, app, cookie) = authed_app().await;
+
+        let mint = |service: &'static str, label: &'static str| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            async move {
+                let body = serde_json::json!({ "service_id": service, "label": label });
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/keys")
+                        .header(axum::http::header::COOKIE, &cookie)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let resp = mint("openai", "laptop").await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let plaintext = v["plaintext"].as_str().unwrap().to_string();
+        assert!(plaintext.starts_with("pi_live_"));
+        assert_eq!(v["service_id"], "openai");
+        assert_eq!(v["label"], "laptop");
+        // last4 must really be the last four chars of the plaintext.
+        assert_eq!(v["last4"].as_str().unwrap(), &plaintext[plaintext.len() - 4..]);
+
+        // Second mint for the same service: 409 with the contract code.
+        let dup = mint("openai", "laptop-2").await;
+        assert_eq!(dup.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(dup.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "conflict");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("key_already_exists"),
+            "expected conflict reason in message: {v}"
+        );
+
+        // And the list endpoint shows exactly one key.
+        let list = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/keys")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        // Listing must NEVER expose plaintext or hashes.
+        assert!(v[0].get("plaintext").is_none());
+        assert!(v[0].get("key_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn mint_rejects_unknown_service_and_empty_label() {
+        let (_state, app, cookie) = authed_app().await;
+
+        let make = |json: serde_json::Value| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/keys")
+                        .header(axum::http::header::COOKIE, &cookie)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let resp = make(serde_json::json!({"service_id": "ghost", "label": "x"})).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = make(serde_json::json!({"service_id": "openai", "label": ""})).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn revoke_then_remint_succeeds_and_revoke_404s() {
+        let (state, _app, cookie) = authed_app().await;
+
+        // Mint
+        let app = build_router(state.clone());
+        let body = serde_json::json!({"service_id": "openai", "label": "laptop"});
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/keys")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let key_id = v["key_id"].as_str().unwrap().to_string();
+
+        // Revoke
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/keys/{key_id}"))
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Revoking the same key again → 404 (idempotent at the verb level,
+        // but we honestly report that the active row is gone).
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/keys/{key_id}"))
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Re-mint for the same service: now works (the partial unique index
+        // ignores revoked rows). End-to-end proof of the §11.2 contract.
+        let app = build_router(state);
+        let body = serde_json::json!({"service_id": "openai", "label": "fresh"});
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/keys")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
     }
 }

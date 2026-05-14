@@ -14,6 +14,7 @@ mod auth;
 mod config;
 mod db;
 mod errors;
+mod keys;
 mod routes;
 mod secret;
 
@@ -114,12 +115,19 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
         .await
         .context("OIDC discovery / client init")?;
 
+    // M4: decode the API-key pepper once. Stays in memory for the lifetime
+    // of the process; rotating it invalidates every existing key (§11.1,
+    // documented loudly in the example config).
+    let pepper = config::decode_key_material(cfg.api_key_pepper.expose())
+        .context("decoding api_key_pepper")?;
+
     let state = AppState {
         config: Arc::new(cfg),
         pool,
         cookie_key,
         cookie_secure,
         oidc: Arc::new(oidc),
+        pepper: Arc::new(pepper),
     };
     let listener = TcpListener::bind(&state.config.listen)
         .await

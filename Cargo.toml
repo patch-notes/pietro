@@ -52,8 +52,14 @@ serde_json = "1"
 # Encode/decode helpers used by the OIDC flow and config key material.
 base64 = "0.22"
 hex = "0.4"
+# Base32 in Crockford alphabet for `pi_live_<22 char>` API key bodies and the
+# 6-char public KeyId (§11.1, §11.2). Tiny crate, no deps.
+base32 = "0.5"
 # Constant-time-ish encoding for our internal random IDs.
 rand = "0.8"
+# Fast keyed-ish hash for API keys. We use BLAKE3 over (pepper || plaintext)
+# — see §11.3 for why Argon2/bcrypt would be the wrong tool here.
+blake3 = "1"
 # Timestamp arithmetic that doesn't drag in chrono.
 time = { version = "0.3", features = ["formatting", "parsing"] }
 

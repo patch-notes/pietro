@@ -18,14 +18,12 @@ use tracing::error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("not found")]
-    #[allow(dead_code, reason = "constructed by M4 /api/keys handlers")]
     NotFound,
     #[error("unauthorized")]
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
     #[error("conflict: {0}")]
-    #[allow(dead_code, reason = "constructed by M4 'key_already_exists' path")]
     Conflict(&'static str),
     #[error("bad request: {0}")]
     BadRequest(&'static str),
@@ -99,5 +97,5 @@ impl IntoResponse for Error {
 
 /// Project-wide `Result` alias. Handlers return this; the boundary layer turns
 /// it into a JSON response.
-#[allow(dead_code, reason = "alias for handler signatures introduced in M4")]
+#[allow(dead_code, reason = "alias kept for future handler signatures")]
 pub type Result<T> = std::result::Result<T, Error>;
