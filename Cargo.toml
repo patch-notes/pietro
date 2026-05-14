@@ -23,6 +23,17 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Storage (M2+)
+# Pin to the runtime + driver we actually use. `migrate` ships the macro that
+# embeds `migrations/*.sql` at compile time (§9). No TLS feature — SQLite is
+# local.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

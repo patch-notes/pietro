@@ -11,6 +11,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod config;
+mod db;
 mod errors;
 mod routes;
 mod secret;
@@ -90,11 +91,20 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
         listen = %cfg.listen,
         public_url = %cfg.public_url,
         services = cfg.services.len(),
+        database_path = %cfg.database_path,
         "pietro starting"
     );
 
+    // M2: open the pool and apply any pending migrations on startup. Ops who
+    // prefer a separate step can still run `pietro migrate` ahead of time —
+    // the migrator is idempotent.
+    let pool = db::connect(&cfg.database_path)
+        .await
+        .context("opening database")?;
+
     let state = AppState {
         config: Arc::new(cfg),
+        pool,
     };
     let listener = TcpListener::bind(&state.config.listen)
         .await
@@ -109,11 +119,13 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-async fn run_migrate(_config_path: &std::path::Path) -> Result<()> {
-    // M2 will implement this. We deliberately do nothing here rather than a
-    // half-working stub — "no half-states shipped" (§19).
-    eprintln!("`pietro migrate` will be implemented in milestone M2.");
-    std::process::exit(2);
+async fn run_migrate(config_path: &std::path::Path) -> Result<()> {
+    let cfg = Config::load(config_path)
+        .with_context(|| format!("loading config: {}", config_path.display()))?;
+    info!(database_path = %cfg.database_path, "applying migrations");
+    let applied = db::migrate(&cfg.database_path).await?;
+    info!(migrations = applied, "migrations up to date");
+    Ok(())
 }
 
 /// Cooperative shutdown: SIGINT (Ctrl-C) or SIGTERM (k8s, systemd).

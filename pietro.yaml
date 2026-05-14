@@ -9,7 +9,7 @@
 #   export PIETRO_OIDC_CLIENT_SECRET="..."
 #   export OPENAI_API_KEY="sk-..."
 
-listen: "127.0.0.1:8080"
+listen: "127.0.0.1:18080"
 public_url: "http://localhost:8080"
 database_path: "./pietro.db"
 
