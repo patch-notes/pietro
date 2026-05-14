@@ -204,8 +204,14 @@ async fn mint_key(
         return Err(Error::BadRequest("unknown service_id"));
     }
 
-    let minted =
-        keys::mint(&state.pool, &state.pepper, &user_id, &body.service_id, &body.label).await?;
+    let minted = keys::mint(
+        &state.pool,
+        &state.pepper,
+        &user_id,
+        &body.service_id,
+        &body.label,
+    )
+    .await?;
 
     let resp = MintKeyResponse {
         key_id: minted.key_id.as_str().to_string(),
@@ -309,7 +315,9 @@ services:
             vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
             EmptyAdditionalProviderMetadata {},
         )
-        .set_token_endpoint(Some(TokenUrl::new("http://idp.test/token".to_string()).unwrap()));
+        .set_token_endpoint(Some(
+            TokenUrl::new("http://idp.test/token".to_string()).unwrap(),
+        ));
         CoreClient::from_provider_metadata(
             metadata,
             ClientId::new("pietro".into()),
@@ -340,7 +348,12 @@ services:
     async fn me_without_session_returns_401_json() {
         let app = build_router(dummy_state().await);
         let resp = app
-            .oneshot(Request::builder().uri("/api/me").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/me")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -543,11 +556,10 @@ services:
 
         // Sign the cookie the same way the production handler would.
         let mut jar = cookie::CookieJar::new();
-        jar.signed_mut(&state.cookie_key)
-            .add(cookie::Cookie::new(
-                crate::auth::session::SESSION_COOKIE,
-                session_id,
-            ));
+        jar.signed_mut(&state.cookie_key).add(cookie::Cookie::new(
+            crate::auth::session::SESSION_COOKIE,
+            session_id,
+        ));
         let cookie_header = jar
             .get(crate::auth::session::SESSION_COOKIE)
             .expect("signed jar must hold the cookie")
@@ -571,7 +583,9 @@ services:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(v.is_array(), "expected array, got {v}");
         assert_eq!(v[0]["id"], "openai");
@@ -622,19 +636,26 @@ services:
 
         let resp = mint("openai", "laptop").await;
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let plaintext = v["plaintext"].as_str().unwrap().to_string();
         assert!(plaintext.starts_with("pi_live_"));
         assert_eq!(v["service_id"], "openai");
         assert_eq!(v["label"], "laptop");
         // last4 must really be the last four chars of the plaintext.
-        assert_eq!(v["last4"].as_str().unwrap(), &plaintext[plaintext.len() - 4..]);
+        assert_eq!(
+            v["last4"].as_str().unwrap(),
+            &plaintext[plaintext.len() - 4..]
+        );
 
         // Second mint for the same service: 409 with the contract code.
         let dup = mint("openai", "laptop-2").await;
         assert_eq!(dup.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(dup.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(dup.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "conflict");
         assert!(
@@ -657,7 +678,9 @@ services:
             .await
             .unwrap();
         assert_eq!(list.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(list.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 1);
         // Listing must NEVER expose plaintext or hashes.
@@ -714,7 +737,9 @@ services:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let key_id = v["key_id"].as_str().unwrap().to_string();
 
@@ -835,12 +860,7 @@ services:
 
     /// Helpers to drive the proxy with `ConnectInfo` populated (axum's
     /// `Router::oneshot` doesn't carry a real peer otherwise).
-    fn proxy_request(
-        method: &str,
-        path: &str,
-        bearer: Option<&str>,
-        body: Body,
-    ) -> Request<Body> {
+    fn proxy_request(method: &str, path: &str, bearer: Option<&str>, body: Body) -> Request<Body> {
         let mut b = Request::builder().method(method).uri(path);
         if let Some(t) = bearer {
             b = b.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
@@ -849,9 +869,9 @@ services:
         // extensions; insert one so the handler sees a peer.
         let mut req = b.body(body).unwrap();
         req.extensions_mut()
-            .insert(axum::extract::connect_info::ConnectInfo::<std::net::SocketAddr>(
-                "203.0.113.7:55555".parse().unwrap(),
-            ));
+            .insert(axum::extract::connect_info::ConnectInfo::<
+                std::net::SocketAddr,
+            >("203.0.113.7:55555".parse().unwrap()));
         req
     }
 
@@ -878,17 +898,28 @@ services:
         let auth = "      kind: bearer\n      value: \"sk-OPERATOR\"";
         let (_state, app, bearer) = proxy_app_with_upstream(&upstream_uri, auth).await;
         let resp = app
-            .oneshot(proxy_request("GET", "/proxy/openai/v1/echo", Some(&bearer), Body::empty()))
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai/v1/echo",
+                Some(&bearer),
+                Body::empty(),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         // Response headers passed through except hop-by-hop.
         assert_eq!(
-            resp.headers().get("x-upstream-marker").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("x-upstream-marker")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "alive"
         );
         // Body streamed through verbatim.
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(&body[..], br#"{"hello":"world"}"#);
     }
 
@@ -899,7 +930,12 @@ services:
         let (_s, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
         // /proxy/ghost/... → 404 because no such service is configured.
         let resp = app
-            .oneshot(proxy_request("GET", "/proxy/ghost/v1/x", Some(&bearer), Body::empty()))
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/ghost/v1/x",
+                Some(&bearer),
+                Body::empty(),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -911,7 +947,12 @@ services:
         let auth = "      kind: bearer\n      value: \"sk-X\"";
         let (_s, app, _bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
         let resp = app
-            .oneshot(proxy_request("GET", "/proxy/openai/v1/x", None, Body::empty()))
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai/v1/x",
+                None,
+                Body::empty(),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -928,7 +969,12 @@ services:
             .await
             .unwrap();
         let resp = app
-            .oneshot(proxy_request("GET", "/proxy/openai/v1/x", Some(&bearer), Body::empty()))
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai/v1/x",
+                Some(&bearer),
+                Body::empty(),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -939,10 +985,7 @@ services:
         let upstream = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/echo"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(418)
-                    .set_body_string("teapot"),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(418).set_body_string("teapot"))
             .mount(&upstream)
             .await;
         let auth = "      kind: bearer\n      value: \"sk-X\"";
@@ -957,7 +1000,9 @@ services:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::IM_A_TEAPOT);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"teapot");
     }
 
@@ -984,7 +1029,9 @@ services:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"found");
     }
 }

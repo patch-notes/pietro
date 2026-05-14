@@ -108,8 +108,8 @@ async fn run_serve(config_path: &std::path::Path) -> Result<()> {
     // M3: derive cookie signing key, infer secure-flag from public_url, run
     // OIDC discovery exactly once. Failure here aborts startup (§8: no
     // partial startup).
-    let key_bytes = config::decode_key_material(cfg.cookie_key.expose())
-        .context("decoding cookie_key")?;
+    let key_bytes =
+        config::decode_key_material(cfg.cookie_key.expose()).context("decoding cookie_key")?;
     let cookie_key = axum_extra::extract::cookie::Key::derive_from(&key_bytes);
     let cookie_secure = cfg.public_url.scheme() == "https";
     let oidc = auth::oidc::OidcState::from_config(&cfg)

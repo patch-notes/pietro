@@ -110,8 +110,7 @@ impl Config {
     /// future callers (e.g. a `pietro check` subcommand) can reuse it.
     pub fn from_yaml_str(text: &str) -> anyhow::Result<Self> {
         let expanded = interpolate_env(text)?;
-        let parsed: RawConfig =
-            serde_yaml::from_str(&expanded).context("parsing config YAML")?;
+        let parsed: RawConfig = serde_yaml::from_str(&expanded).context("parsing config YAML")?;
         Config::try_from(parsed)
     }
 }
@@ -183,17 +182,9 @@ struct RawService {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum RawAuth {
-    Bearer {
-        value: String,
-    },
-    Header {
-        header: String,
-        value: String,
-    },
-    Query {
-        param: String,
-        value: String,
-    },
+    Bearer { value: String },
+    Header { header: String, value: String },
+    Query { param: String, value: String },
 }
 
 // -- validation --------------------------------------------------------------
@@ -342,7 +333,7 @@ pub fn decode_key_material(s: &str) -> Option<Vec<u8>> {
 }
 
 fn try_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || s.is_empty() {
+    if !s.len().is_multiple_of(2) || s.is_empty() {
         return None;
     }
     if !s.bytes().all(|b| b.is_ascii_hexdigit()) {

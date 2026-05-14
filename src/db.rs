@@ -3,8 +3,8 @@
 //! Two entry points:
 //!   * [`connect`]   — open / create the pool and apply pending migrations.
 //!   * [`migrate`]   — apply pending migrations only (used by the
-//!                     `pietro migrate` subcommand for ops who want to run
-//!                     migrations as a separate step before `serve`).
+//!     `pietro migrate` subcommand for ops who want to run
+//!     migrations as a separate step before `serve`).
 //!
 //! `sqlx::migrate!()` walks `migrations/` at compile time and embeds the SQL
 //! into the binary, so a deployed Pietro never reads loose .sql files.

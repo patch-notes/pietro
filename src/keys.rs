@@ -102,10 +102,7 @@ impl KeyId {
         if !s.starts_with("pi_") || s.len() < 4 || s.len() > 32 {
             return Err(Error::BadRequest("invalid key id"));
         }
-        if !s.bytes().all(|b| {
-            b == b'_'
-                || b.is_ascii_alphanumeric()
-        }) {
+        if !s.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric()) {
             return Err(Error::BadRequest("invalid key id"));
         }
         Ok(Self(s.to_string()))
@@ -232,8 +229,7 @@ fn is_unique_violation(db: &dyn sqlx::error::DatabaseError) -> bool {
     // (primary). We match by message substring as well to stay robust.
     let code = db.code();
     let msg = db.message();
-    matches!(code.as_deref(), Some("2067") | Some("1555") | Some("19"))
-        || msg.contains("UNIQUE")
+    matches!(code.as_deref(), Some("2067") | Some("1555") | Some("19")) || msg.contains("UNIQUE")
 }
 
 // -- list --------------------------------------------------------------------
@@ -480,8 +476,18 @@ mod tests {
     #[tokio::test]
     async fn verify_rejects_garbage_and_revoked() {
         let (pool, pepper) = fixture().await;
-        assert!(verify(&pool, &pepper, "not-even-prefixed").await.unwrap().is_none());
-        assert!(verify(&pool, &pepper, "pi_live_NOPE").await.unwrap().is_none());
+        assert!(
+            verify(&pool, &pepper, "not-even-prefixed")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            verify(&pool, &pepper, "pi_live_NOPE")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let m = mint(&pool, &pepper, "u1", "svc-a", "k").await.unwrap();
         revoke(&pool, "u1", &m.key_id).await.unwrap();

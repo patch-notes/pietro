@@ -209,7 +209,7 @@ pub async fn forward(
     //    caller's value and emit a single warn line — §12 "Header collisions".
     let (mut upstream_headers, mut upstream_url) = (forwarded_headers, upstream_url);
     inject_auth(
-        &service.id.as_str().to_owned(),
+        service.id.as_str(),
         &service.auth,
         &mut upstream_headers,
         &mut upstream_url,
@@ -222,9 +222,7 @@ pub async fn forward(
     // 8. Issue with reqwest, streaming the inbound body.
     let upstream_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|_| Error::BadRequest("invalid method"))?;
-    let inbound_stream = body
-        .into_data_stream()
-        .map_err(std::io::Error::other);
+    let inbound_stream = body.into_data_stream().map_err(std::io::Error::other);
     let reqwest_body = reqwest::Body::wrap_stream(inbound_stream);
 
     let upstream_resp = state
@@ -239,14 +237,11 @@ pub async fn forward(
     // 9. Stream the response back, again stripping hop-by-hop headers.
     let status = upstream_resp.status();
     let upstream_resp_headers = upstream_resp.headers().clone();
-    let resp_stream = upstream_resp
-        .bytes_stream()
-        .map_err(std::io::Error::other);
+    let resp_stream = upstream_resp.bytes_stream().map_err(std::io::Error::other);
     let body_out = Body::from_stream(resp_stream);
 
-    let mut response_builder = Response::builder().status(
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-    );
+    let mut response_builder = Response::builder()
+        .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
     let resp_headers = response_builder
         .headers_mut()
         .expect("builder is fresh, must have headers");
@@ -275,7 +270,11 @@ pub async fn forward(
 
 // -- url assembly ------------------------------------------------------------
 
-fn build_upstream_url(service: &Service, tail: &str, query: Option<&str>) -> Result<url::Url, Error> {
+fn build_upstream_url(
+    service: &Service,
+    tail: &str,
+    query: Option<&str>,
+) -> Result<url::Url, Error> {
     // The tail captured by axum's `{*path}` does NOT have a leading slash.
     // We always want exactly one between the upstream's path and the tail.
     let mut upstream = service.upstream_url.clone();
@@ -317,12 +316,11 @@ fn filter_request_headers(inbound: &HeaderMap) -> HeaderMap {
         if k == axum::http::header::COOKIE {
             // Strip just our session cookie. Other cookies pass through —
             // some APIs use cookies for non-session purposes (e.g. AWS).
-            if let Some(filtered) = filter_session_cookie(v) {
-                if !filtered.is_empty() {
-                    if let Ok(val) = HeaderValue::from_str(&filtered) {
-                        out.append(k.clone(), val);
-                    }
-                }
+            if let Some(filtered) = filter_session_cookie(v)
+                && !filtered.is_empty()
+                && let Ok(val) = HeaderValue::from_str(&filtered)
+            {
+                out.append(k.clone(), val);
             }
             continue;
         }
@@ -339,9 +337,8 @@ fn filter_session_cookie(v: &HeaderValue) -> Option<String> {
         .split(';')
         .map(str::trim)
         .filter(|part| {
-            !part
-                .split_once('=')
-                .is_some_and(|(name, _)| name == SESSION_COOKIE)
+            part.split_once('=')
+                .is_none_or(|(name, _)| name != SESSION_COOKIE)
         })
         .filter(|part| !part.is_empty())
         .collect();
@@ -512,16 +509,18 @@ mod tests {
     fn build_upstream_url_joins_path_and_query() {
         let svc = svc_bearer();
         let u = build_upstream_url(&svc, "v1/chat/completions", Some("debug=1")).unwrap();
-        assert_eq!(u.as_str(), "https://api.upstream.test/v1/chat/completions?debug=1");
+        assert_eq!(
+            u.as_str(),
+            "https://api.upstream.test/v1/chat/completions?debug=1"
+        );
     }
 
     #[test]
     fn build_upstream_url_preserves_base_path() {
+        // axum captures the tail without the query string, so the realistic
+        // shape is `tail = "search"`, `query = Some("q=hi")`. The base path
+        // `/base` from the service config must survive the join.
         let svc = svc_header("X-Api");
-        let u = build_upstream_url(&svc, "search?q=hi", None).unwrap();
-        // Tail is opaque — query stays in the `?q=hi` literal of the path.
-        // axum captures the tail without the query, so the test below is
-        // the realistic case.
         let u = build_upstream_url(&svc, "search", Some("q=hi")).unwrap();
         assert_eq!(u.as_str(), "https://api.upstream.test/base/search?q=hi");
     }

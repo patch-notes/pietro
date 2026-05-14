@@ -97,9 +97,7 @@ impl OidcState {
         let client = CoreClient::from_provider_metadata(
             metadata,
             ClientId::new(cfg.oidc.client_id.clone()),
-            Some(ClientSecret::new(
-                cfg.oidc.client_secret.expose().clone(),
-            )),
+            Some(ClientSecret::new(cfg.oidc.client_secret.expose().clone())),
         )
         .set_redirect_uri(
             RedirectUrl::new(callback_url(&cfg.public_url))
