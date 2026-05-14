@@ -1,0 +1,17 @@
+/target
+
+# Local dev artifacts
+/pietro.db
+/pietro.db-journal
+/pietro.db-wal
+/pietro.db-shm
+
+# Frontend build output is embedded by rust-embed; the source of truth is frontend/src.
+# (frontend/dist is rebuilt by build.rs; we don't commit it.)
+/frontend/dist
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store

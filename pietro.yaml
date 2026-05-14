@@ -1,0 +1,33 @@
+# pietro.yaml — example dev config.
+#
+# Copy or symlink this as your local `pietro.yaml`. Secrets are pulled from the
+# environment; export the variables below before running `pietro serve`.
+#
+# Generate the random keys with:
+#   export PIETRO_COOKIE_KEY=$(openssl rand -hex 32)
+#   export PIETRO_API_KEY_PEPPER=$(openssl rand -hex 32)
+#   export PIETRO_OIDC_CLIENT_SECRET="..."
+#   export OPENAI_API_KEY="sk-..."
+
+listen: "127.0.0.1:8080"
+public_url: "http://localhost:8080"
+database_path: "./pietro.db"
+
+cookie_key: "${PIETRO_COOKIE_KEY}"
+api_key_pepper: "${PIETRO_API_KEY_PEPPER}"
+
+oidc:
+  issuer_url: "http://localhost:9000/realms/main"
+  client_id: "pietro"
+  client_secret: "${PIETRO_OIDC_CLIENT_SECRET}"
+  allowed_email_domains: ["example.com"]
+  scopes: ["profile", "email"]
+
+services:
+  - id: "openai"
+    display_name: "OpenAI"
+    description: "Chat + embeddings"
+    upstream_url: "https://api.openai.com"
+    auth:
+      kind: bearer
+      value: "${OPENAI_API_KEY}"
