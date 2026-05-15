@@ -537,7 +537,20 @@ layer alone.
 
 ## 12. Proxy request flow
 
-For `ANY /proxy/:service_id/*path`:
+The proxy is mounted on three routes, all going through `ANY`:
+
+- `/proxy/{service_id}` → `forward_bare` (empty tail → upstream root)
+- `/proxy/{service_id}/` → `forward_bare` (same)
+- `/proxy/{service_id}/{*path}` → `forward` (any non-empty tail)
+
+The two handlers share an inner function so the auth/header/body logic
+lives in exactly one place. We register three routes because axum 0.8's
+`{*path}` wildcard demands at least one non-empty segment — if we
+omitted the bare entries, a perfectly reasonable `curl /proxy/<id>`
+would 404 through the SPA fallback. Callers shouldn't have to know
+about a router-level peculiarity.
+
+For each forwarded request:
 
 ```
 1. Authenticate the caller (§11.3). Result: (user_id, key_service_id).

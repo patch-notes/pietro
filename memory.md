@@ -45,6 +45,8 @@ origin v0.1.0`) to exercise the release workflow end to end.
   - **Step 2** (`8b226d4`): `.github/workflows/release.yml` — tag-triggered (`v*`) musl build for x86_64 (host `musl-tools`) + aarch64 (via `cross`, no aarch64-musl-gcc needed on the runner). Order is §13 strict: SPA build first (`npm ci && npm run build`), then `cargo build --release` so rust-embed has bytes and `build.rs`'s release-mode check passes. Tarballs (`pietro-<tag>-{target}.tar.gz`) + `.sha256` upload via `softprops/action-gh-release@v2`. Hyphenated tags (e.g. `v0.1.0-rc1`) automatically flip to `prerelease: true`.
   - **Step 3** (this commit): ship docs — `STATUS.md` rewritten as the v1-complete snapshot (60/60, 11 MB binary, release workflow, debug-vs-release SPA contract); `pietro.md` §19 marks M7 shipped and the top-of-doc checkpoint pointer updated; `memory.md` (this file) updated. **Pinned for M7**: (a) Debug builds intentionally never serve the embedded SPA — they return the notice page. This is to kill the "I'm staring at four-day-old embedded bytes" foot-gun; if you need to test the SPA bundle, `cargo build --release`. (b) `Router::fallback` in axum 0.8 catches any path that didn't match a real route; classify by prefix inside the handler to honor §7 carve-out. (c) rust-embed gracefully embeds an empty asset set when the folder is missing — useful for the dev-mode story, but `build.rs` enforces non-emptiness in release.
 - 2026-05-15 (post-v1): User reported that some upstream services have no auth, so the `auth:` field in YAML must be optional. Small surgical change: `Service.auth: ServiceAuth → Option<ServiceAuth>`; `RawService.auth` becomes `#[serde(default)] Option<RawAuth>`; the proxy's `forward` handler wraps the `inject_auth` call in `if let Some(auth) = service.auth.as_ref()`. `inject_auth` itself unchanged — it still takes `&ServiceAuth`. Three test helpers in `proxy.rs` (`svc_bearer`/`svc_header`/`svc_query`) and the three direct `inject_auth` callsites in tests updated mechanically. New config test `accepts_service_without_auth_block` parses a YAML with the entire `auth:` block stripped and asserts the resulting `Service.auth.is_none()`. `pietro.md` §8 YAML example annotated with the new optionality comment. **61/61 green** (was 60). No new deps; no migration; no breaking change for existing configs.
+- 2026-05-15 (post-v1 UI): User asked for the service endpoint to appear in the token list so they know where to point their clients. Pure frontend change in `frontend/src/pages/Dashboard.tsx`: added an `Endpoint` subcomponent that derives `${window.location.origin}/proxy/${service_id}` (same-origin is guaranteed by §7 — UI and proxy share host) and renders it under the prefix/last4 line with a click-to-copy button. Uses `navigator.clipboard.writeText` with the same insecure-context `document.createRange` fallback already used on `/new`. No new imports (useState was already there); no new deps; no backend touch. Bundle grew from 243 KB → 244 KB (gz 77.28 KB, still well under the 200 KB-gz target). `npm run lint` + `npm run build` clean.
+- 2026-05-15 (post-v1 bug): User curled `/proxy/serxng` and got 404 even with a valid Bearer token. The cause was structural: only `/proxy/{service_id}/{*path}` was registered, and axum 0.8's `{*path}` wildcard demands ≥1 non-empty segment, so the bare-service URL fell through to the SPA fallback's JSON-404. Fixed by splitting the handler in `src/proxy.rs`: `forward` (the existing extractor) and new `forward_bare` (extracts `Path<String>`) both delegate to `forward_inner(state, peer, service_id, tail, req)`. `src/routes.rs` now registers three routes — `/proxy/{service_id}`, `/proxy/{service_id}/`, and the original `/proxy/{service_id}/{*path}` — so a caller's natural URL shape works. New test `proxy_bare_service_url_hits_upstream_root` drives both bare and trailing-slash variants through wiremock; failed-red before the fix, green after. **62/62 green**. No new deps, no migration, no breaking change. `build_upstream_url` already supported empty tails (existing test `build_upstream_url_empty_tail_hits_base` proved it); the bug was purely at the routing layer. One unrelated pre-existing fmt drift in `src/auth/oidc.rs:94` (a long line) cleaned up in the same `cargo fmt` pass to restore the clean baseline.
 
 ## Semantic (facts about this project)
 - **Name**: Pietro (Saint Peter, keeper of the keys).
@@ -113,6 +115,16 @@ origin v0.1.0`) to exercise the release workflow end to end.
 
 ## Open user questions
 All resolved as of 2026-05-14 M5 ship. See §20 of `pietro.md`.
+
+## Known gotchas
+- **Proxy URL shape**: the route surface is three patterns:
+  `/proxy/{service_id}` and `/proxy/{service_id}/` both go to
+  `proxy::forward_bare` (empty tail → upstream root), and
+  `/proxy/{service_id}/{*path}` goes to `proxy::forward` for everything
+  with at least one path segment. So `curl /proxy/<id>` and `curl
+  /proxy/<id>/search?q=hi` both work as you'd expect. Earlier in v1 only
+  the wildcard was registered and bare service URLs 404'd — fixed
+  2026-05-15.
 
 ## Milestone status
 - [x] **M1 — Skeleton.** 9/9 tests.
