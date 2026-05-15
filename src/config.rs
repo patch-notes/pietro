@@ -75,7 +75,10 @@ pub struct Service {
     pub display_name: String,
     pub description: Option<String>,
     pub upstream_url: Url,
-    pub auth: ServiceAuth,
+    /// `None` when the upstream needs no operator-supplied credential (some
+    /// internal services are open). When `Some`, the proxy injects it per
+    /// §8 `auth:` block semantics.
+    pub auth: Option<ServiceAuth>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +179,8 @@ struct RawService {
     #[serde(default)]
     description: Option<String>,
     upstream_url: String,
-    auth: RawAuth,
+    #[serde(default)]
+    auth: Option<RawAuth>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,32 +249,33 @@ impl TryFrom<RawConfig> for Config {
                 }
             }
             let auth = match s.auth {
-                RawAuth::Bearer { value } => ServiceAuth::Bearer {
+                None => None,
+                Some(RawAuth::Bearer { value }) => Some(ServiceAuth::Bearer {
                     value: Secret::new(value),
-                },
-                RawAuth::Header { header, value } => {
+                }),
+                Some(RawAuth::Header { header, value }) => {
                     if header.is_empty() {
                         return Err(anyhow!(
                             "service {:?}: auth.kind=header requires non-empty `header`",
                             s.id
                         ));
                     }
-                    ServiceAuth::Header {
+                    Some(ServiceAuth::Header {
                         header,
                         value: Secret::new(value),
-                    }
+                    })
                 }
-                RawAuth::Query { param, value } => {
+                Some(RawAuth::Query { param, value }) => {
                     if param.is_empty() {
                         return Err(anyhow!(
                             "service {:?}: auth.kind=query requires non-empty `param`",
                             s.id
                         ));
                     }
-                    ServiceAuth::Query {
+                    Some(ServiceAuth::Query {
                         param,
                         value: Secret::new(value),
-                    }
+                    })
                 }
             };
             services.push(Service {
@@ -412,6 +417,22 @@ mod tests {
         let cfg = Config::try_from(raw).unwrap();
         assert_eq!(cfg.services.len(), 1);
         assert_eq!(cfg.services[0].id.as_str(), "openai");
+    }
+
+    #[test]
+    fn accepts_service_without_auth_block() {
+        // Some upstreams are open — the `auth:` key must be optional.
+        let yaml = sample_yaml().replace(
+            "    auth:\n      kind: bearer\n      value: \"sk-test\"\n",
+            "",
+        );
+        let raw: RawConfig = serde_yaml::from_str(&yaml).unwrap();
+        let cfg = Config::try_from(raw).unwrap();
+        assert_eq!(cfg.services.len(), 1);
+        assert!(
+            cfg.services[0].auth.is_none(),
+            "expected auth-less service to round-trip as None"
+        );
     }
 
     #[test]

@@ -205,15 +205,19 @@ pub async fn forward(
     //    rest. Note: we keep `Content-Type`, `Content-Length`, etc.
     let forwarded_headers = filter_request_headers(&headers);
 
-    // 6. Inject the operator credential. Header collisions overwrite the
-    //    caller's value and emit a single warn line — §12 "Header collisions".
+    // 6. Inject the operator credential (if any — some upstreams are open
+    //    and have no `auth:` block in the YAML). Header collisions overwrite
+    //    the caller's value and emit a single warn line — §12 "Header
+    //    collisions".
     let (mut upstream_headers, mut upstream_url) = (forwarded_headers, upstream_url);
-    inject_auth(
-        service.id.as_str(),
-        &service.auth,
-        &mut upstream_headers,
-        &mut upstream_url,
-    );
+    if let Some(auth) = service.auth.as_ref() {
+        inject_auth(
+            service.id.as_str(),
+            auth,
+            &mut upstream_headers,
+            &mut upstream_url,
+        );
+    }
 
     // 7. Append the immediate peer to X-Forwarded-For. Trust the peer only
     //    (Q4 default; documented in §12).
@@ -473,9 +477,9 @@ mod tests {
             display_name: "x".into(),
             description: None,
             upstream_url: url::Url::parse("https://api.upstream.test").unwrap(),
-            auth: ServiceAuth::Bearer {
+            auth: Some(ServiceAuth::Bearer {
                 value: Secret::new("sk-OPERATOR".into()),
-            },
+            }),
         }
     }
 
@@ -485,10 +489,10 @@ mod tests {
             display_name: "x".into(),
             description: None,
             upstream_url: url::Url::parse("https://api.upstream.test/base").unwrap(),
-            auth: ServiceAuth::Header {
+            auth: Some(ServiceAuth::Header {
                 header: name.into(),
                 value: Secret::new("OP-SECRET".into()),
-            },
+            }),
         }
     }
 
@@ -498,10 +502,10 @@ mod tests {
             display_name: "x".into(),
             description: None,
             upstream_url: url::Url::parse("https://api.upstream.test").unwrap(),
-            auth: ServiceAuth::Query {
+            auth: Some(ServiceAuth::Query {
                 param: "api_key".into(),
                 value: Secret::new("OP".into()),
-            },
+            }),
         }
     }
 
@@ -541,7 +545,7 @@ mod tests {
             HeaderValue::from_static("Bearer pi_live_calling"),
         );
         let mut url = svc.upstream_url.clone();
-        inject_auth("openai", &svc.auth, &mut headers, &mut url);
+        inject_auth("openai", svc.auth.as_ref().unwrap(), &mut headers, &mut url);
         let got = headers
             .get(axum::http::header::AUTHORIZATION)
             .unwrap()
@@ -555,7 +559,7 @@ mod tests {
         let svc = svc_header("X-Internal");
         let mut headers = HeaderMap::new();
         let mut url = svc.upstream_url.clone();
-        inject_auth("inner", &svc.auth, &mut headers, &mut url);
+        inject_auth("inner", svc.auth.as_ref().unwrap(), &mut headers, &mut url);
         assert_eq!(
             headers.get("x-internal").unwrap().to_str().unwrap(),
             "OP-SECRET"
@@ -568,7 +572,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let mut url = svc.upstream_url.clone();
         url.set_query(Some("api_key=caller&other=keep"));
-        inject_auth("q", &svc.auth, &mut headers, &mut url);
+        inject_auth("q", svc.auth.as_ref().unwrap(), &mut headers, &mut url);
         let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(q.get("api_key").map(|s| s.as_str()), Some("OP"));
         assert_eq!(q.get("other").map(|s| s.as_str()), Some("keep"));

@@ -386,10 +386,10 @@ services:
 
         let idp = MockServer::start().await;
         let base = idp.uri();
-        // The openidconnect crate normalises the IssuerUrl to include a
-        // trailing slash; the `issuer` claim returned by discovery must match
-        // *exactly*. Mirror the normalisation here so the test passes.
-        let issuer = format!("{base}/");
+        // Real OIDC providers (e.g. Nextcloud) return the issuer WITHOUT a
+        // trailing slash in their discovery document. Our IssuerUrl now strips
+        // the trailing slash before comparison, so the mock must match.
+        let issuer = base.clone();
         let discovery = serde_json::json!({
             "issuer": issuer,
             "authorization_endpoint": format!("{base}/authorize"),

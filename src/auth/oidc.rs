@@ -90,7 +90,13 @@ impl OidcState {
     /// the client, capture the policy bits from config.
     pub async fn from_config(cfg: &Config) -> anyhow::Result<Self> {
         let http = OidcHttpClient::new()?.0;
-        let issuer_url = IssuerUrl::from_url(cfg.oidc.issuer_url.clone());
+        // OIDC requires an exact string match between our issuer and the
+        // discovery document's `issuer` field. `IssuerUrl::from_url()` normalises
+        // the URL (adding a trailing slash), so we strip it from the raw string
+        // and use `IssuerUrl::new()` which preserves the original representation.
+        let issuer_str = cfg.oidc.issuer_url.as_str().trim_end_matches('/').to_string();
+        let issuer_url = IssuerUrl::new(issuer_str)
+            .context("invalid oidc.issuer_url (cannot create IssuerUrl)")?;
         let metadata = CoreProviderMetadata::discover_async(issuer_url, &http)
             .await
             .context("OIDC discovery failed")?;

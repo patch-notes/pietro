@@ -264,6 +264,8 @@ services:
     description: "Chat + embeddings"   # Optional
     upstream_url: "https://api.openai.com"
     # How Pietro injects upstream credentials into forwarded requests.
+    # Optional: omit the entire `auth:` block for upstreams that need no
+    # operator credential (some internal services are open).
     auth:
       kind: "bearer"                   # bearer | header | query
       value: "${OPENAI_API_KEY}"       # Plain string after env expansion
