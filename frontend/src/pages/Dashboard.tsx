@@ -164,7 +164,7 @@ function KeyListItem({
         (revoked ? 'opacity-50' : '')
       }
     >
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-medium truncate">{k.label}</span>
           <span className="text-xs rounded bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 text-zinc-600 dark:text-zinc-300">
@@ -179,6 +179,7 @@ function KeyListItem({
         <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400 font-mono">
           {k.prefix}…{k.last4}
         </div>
+        <Endpoint serviceId={k.service_id} />
       </div>
       {!revoked && (
         <button
@@ -194,5 +195,51 @@ function KeyListItem({
         </button>
       )}
     </li>
+  )
+}
+
+// Endpoint — the URL a caller should point their client at for this
+// service. Pietro serves both the UI and the proxy on the same origin
+// (see §7 of pietro.md), so we can derive the base from window.location.
+// Click to copy; the label briefly flips to "copied" as feedback.
+function Endpoint({ serviceId }: { serviceId: string }) {
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/proxy/${serviceId}`
+
+  async function onCopy() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    } catch {
+      // Insecure-context fallback: select the text so the user can ⌘C.
+      const range = document.createRange()
+      const node = document.getElementById(`endpoint-${serviceId}`)
+      if (node) {
+        range.selectNodeContents(node)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+    }
+  }
+
+  return (
+    <div className="mt-1 flex items-center gap-2 text-xs">
+      <span className="text-zinc-400 dark:text-zinc-500">endpoint</span>
+      <code
+        id={`endpoint-${serviceId}`}
+        className="font-mono text-zinc-600 dark:text-zinc-300 truncate"
+      >
+        {url}
+      </code>
+      <button
+        type="button"
+        onClick={onCopy}
+        className="text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition shrink-0"
+      >
+        {copied ? 'copied' : 'copy'}
+      </button>
+    </div>
   )
 }
