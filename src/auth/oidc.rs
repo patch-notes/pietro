@@ -94,7 +94,12 @@ impl OidcState {
         // discovery document's `issuer` field. `IssuerUrl::from_url()` normalises
         // the URL (adding a trailing slash), so we strip it from the raw string
         // and use `IssuerUrl::new()` which preserves the original representation.
-        let issuer_str = cfg.oidc.issuer_url.as_str().trim_end_matches('/').to_string();
+        let issuer_str = cfg
+            .oidc
+            .issuer_url
+            .as_str()
+            .trim_end_matches('/')
+            .to_string();
         let issuer_url = IssuerUrl::new(issuer_str)
             .context("invalid oidc.issuer_url (cannot create IssuerUrl)")?;
         let metadata = CoreProviderMetadata::discover_async(issuer_url, &http)

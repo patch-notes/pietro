@@ -75,8 +75,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/login", get(oidc::login))
         .route("/api/auth/callback", get(oidc::callback))
         .route("/api/auth/logout", post(oidc::logout))
-        // The proxy catches every method via `any`. Wildcard `{*path}`
-        // captures the rest of the URL after `/proxy/{service_id}/`.
+        // The proxy catches every method via `any`. Three routes share two
+        // handlers: bare `/proxy/{service_id}` and `/proxy/{service_id}/`
+        // both call `forward_bare` (empty tail → upstream root); the
+        // wildcard `{*path}` requires ≥1 segment after the slash and goes
+        // through `forward`.
+        .route(
+            "/proxy/{service_id}",
+            axum::routing::any(crate::proxy::forward_bare),
+        )
+        .route(
+            "/proxy/{service_id}/",
+            axum::routing::any(crate::proxy::forward_bare),
+        )
         .route(
             "/proxy/{service_id}/{*path}",
             axum::routing::any(crate::proxy::forward),
@@ -1014,6 +1025,50 @@ services:
             .await
             .unwrap();
         assert_eq!(&body[..], b"teapot");
+    }
+
+    /// Bare-service URLs (no tail) must reach the upstream root. Reported
+    /// in the field: callers naturally try `/proxy/<id>` and expect it to
+    /// land on the upstream's `/`. The route must match, the auth check
+    /// must run, and the upstream must see a request to `/`.
+    #[tokio::test]
+    async fn proxy_bare_service_url_hits_upstream_root() {
+        let upstream = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("root!"))
+            .mount(&upstream)
+            .await;
+        let auth = "      kind: bearer\n      value: \"sk-X\"";
+        let (_s, app, bearer) = proxy_app_with_upstream(&upstream.uri(), auth).await;
+        // No trailing slash, no tail — the form the user typed.
+        let resp = app
+            .clone()
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai",
+                Some(&bearer),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"root!");
+
+        // Also accept the trailing-slash variant — same destination.
+        let resp = app
+            .oneshot(proxy_request(
+                "GET",
+                "/proxy/openai/",
+                Some(&bearer),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

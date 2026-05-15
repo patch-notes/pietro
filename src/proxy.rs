@@ -169,6 +169,28 @@ pub async fn forward(
     Path((service_id, tail)): Path<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response, Error> {
+    forward_inner(state, peer, service_id, tail, req).await
+}
+
+/// Bare-service variant: routed for `/proxy/{service_id}` and
+/// `/proxy/{service_id}/` (no wildcard tail). Equivalent to `forward` with
+/// an empty path tail — lets callers hit the upstream's root directly.
+pub async fn forward_bare(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(service_id): Path<String>,
+    req: Request<Body>,
+) -> Result<Response, Error> {
+    forward_inner(state, peer, service_id, String::new(), req).await
+}
+
+async fn forward_inner(
+    state: AppState,
+    peer: SocketAddr,
+    service_id: String,
+    tail: String,
+    req: Request<Body>,
+) -> Result<Response, Error> {
     let (parts, body) = req.into_parts();
     let headers = parts.headers;
     let method = parts.method;
