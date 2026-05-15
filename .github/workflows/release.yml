@@ -1,0 +1,109 @@
+# GitHub Actions release workflow for Pietro (§13).
+#
+# Trigger: a tag push matching `v*` (e.g. `v0.1.0`, `v1.2.3-rc1`).
+# Job: build a static musl binary for each target, tar + checksum,
+#      attach to a GitHub Release.
+#
+# Targets are §13: x86_64 + aarch64 unknown-linux-musl. Anything else can
+# be added when there's a concrete operator who needs it.
+#
+# The workflow does the §13 build sequence in order: frontend first
+# (`npm ci && npm run build` → `frontend/dist/`), then `cargo build
+# --release`, which lets `rust-embed` slurp the dist into the binary and
+# `build.rs` enforce that index.html actually exists.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # needed to create/attach the release
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cross: false
+          - target: aarch64-unknown-linux-musl
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Frontend: build the SPA so rust-embed has something to embed.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build SPA
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      # --- Rust toolchain + target.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # --- musl toolchain. For x86_64 the `musl-tools` package gives us
+      # a working linker; for aarch64 we use `cross`, which spins up a
+      # containerised cross-compiler so the host's Ubuntu doesn't need
+      # an aarch64-musl gcc.
+      - name: Install musl-tools (x86_64)
+        if: matrix.cross == false
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross (aarch64)
+        if: matrix.cross == true
+        run: cargo install cross --locked
+
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+
+      # --- Package: tarball + sha256.
+      - name: Package artifact
+        id: pkg
+        run: |
+          set -eu
+          BIN="target/${{ matrix.target }}/release/pietro"
+          VERSION="${GITHUB_REF_NAME}"
+          NAME="pietro-${VERSION}-${{ matrix.target }}"
+          mkdir -p dist
+          # Strip if a host strip exists for this target (musl binaries
+          # are already pretty lean; `strip = true` in release profile
+          # already takes care of most of it).
+          tar -C "$(dirname "$BIN")" -czf "dist/${NAME}.tar.gz" "$(basename "$BIN")"
+          (cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          echo "artifact=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/${NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pkg.outputs.artifact }}
+            ${{ steps.pkg.outputs.sha }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
