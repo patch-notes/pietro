@@ -6,28 +6,28 @@
 # Generate the random keys with:
 #   export PIETRO_COOKIE_KEY=$(openssl rand -hex 32)
 #   export PIETRO_API_KEY_PEPPER=$(openssl rand -hex 32)
+#   export PIETRO_OIDC_CLIENT_ID="..."
 #   export PIETRO_OIDC_CLIENT_SECRET="..."
-#   export OPENAI_API_KEY="sk-..."
+#   # plus any per-service auth secrets you reference below.
 
 listen: "127.0.0.1:18080"
-public_url: "http://localhost:8080"
+public_url: "http://localhost:18080"
 database_path: "./pietro.db"
 
 cookie_key: "${PIETRO_COOKIE_KEY}"
 api_key_pepper: "${PIETRO_API_KEY_PEPPER}"
 
 oidc:
-  issuer_url: "http://127.0.0.1:19000/"
-  client_id: "pietro"
+  issuer_url: "https://nextcloud.patchnotes.com"
+  client_id: "${PIETRO_OIDC_CLIENT_ID}"
   client_secret: "${PIETRO_OIDC_CLIENT_SECRET}"
-  allowed_email_domains: ["example.com"]
+  allowed_email_domains: ["patchnotes.com"]
   scopes: ["profile", "email"]
 
 services:
-  - id: "openai"
-    display_name: "OpenAI"
-    description: "Chat + embeddings"
-    upstream_url: "https://api.openai.com"
-    auth:
-      kind: bearer
-      value: "${OPENAI_API_KEY}"
+  - id: "serxng"
+    display_name: "SearXNG"
+    description: "Web search"
+    upstream_url: "http://searxng.lan"
+#    auth:
+#      kind: bearer
