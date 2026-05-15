@@ -70,6 +70,14 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # transitively, so adding it directly costs us nothing.
 futures-util = { version = "0.3", default-features = false }
 
+# Embed the built React SPA (`frontend/dist/`) into the binary at compile
+# time, so a single binary ships the full UI (§13). One handler in
+# `src/spa.rs` serves the bytes with Content-Type guessed by extension and
+# falls back to `index.html` for SPA history-mode routes (§7). No
+# `mime_guess` needed — the bundle is JS+CSS+HTML+SVG and the match table
+# is ten lines.
+rust-embed = "8"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

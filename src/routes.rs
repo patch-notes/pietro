@@ -10,6 +10,9 @@
 //!   * `GET /api/keys`              — list current user's keys.
 //!   * `POST /api/keys`             — mint a key; plaintext returned once.
 //!   * `DELETE /api/keys/:key_id`   — soft-revoke.
+//!   * `GET /assets/{*path}`        — embedded SPA static files (M7).
+//!   * fallback                     — embedded SPA `index.html` for any other
+//!     path; JSON 404 under `/api/` and `/proxy/` (§7).
 //!
 //! Per §7 the entire app is one flat `axum::Router` — no nested apps.
 
@@ -78,6 +81,13 @@ pub fn build_router(state: AppState) -> Router {
             "/proxy/{service_id}/{*path}",
             axum::routing::any(crate::proxy::forward),
         )
+        // M7: embedded SPA. Assets are content-addressed by Vite, so a miss
+        // is a real miss (no fallback inside `/assets/`).
+        .route("/assets/{*path}", get(crate::spa::serve_asset))
+        // M7: everything else falls through to the SPA handler, which
+        // serves `index.html` for history-mode routes and JSON-404s any
+        // unmatched `/api/*` or `/proxy/*` path (§7).
+        .fallback(crate::spa::fallback)
         .with_state(state)
 }
 
@@ -1033,5 +1043,80 @@ services:
             .await
             .unwrap();
         assert_eq!(&body[..], b"found");
+    }
+
+    // --- M7: SPA fallback + JSON-404 carve-out for /api/* and /proxy/* ----
+
+    /// The fallback handler must answer with a 200 + HTML page for any
+    /// unknown non-API path so react-router can pick up history-mode
+    /// routes on the client. In a debug build (cargo test is always
+    /// debug) this is the dev-mode notice; in release it would be the
+    /// embedded `index.html`. Either way: 200 + `text/html`.
+    #[tokio::test]
+    async fn spa_fallback_serves_html_for_unknown_non_api_path() {
+        let app = build_router(dummy_state().await);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/some/spa/route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("content-type")
+            .to_str()
+            .unwrap();
+        assert!(ct.starts_with("text/html"), "expected text/html, got {ct}");
+    }
+
+    /// `/api/garbage` must return JSON-404 with the project error envelope —
+    /// NOT the SPA. §7 contract: the SPA fallback never swallows `/api/*`.
+    #[tokio::test]
+    async fn unknown_api_path_returns_json_404() {
+        let app = build_router(dummy_state().await);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/garbage")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "not_found");
+    }
+
+    /// Same contract on the proxy side: `/proxy/anything` that doesn't
+    /// match the real `/proxy/{service_id}/{*path}` route must JSON-404,
+    /// not return the SPA. Otherwise a caller hitting a malformed proxy
+    /// URL would see an HTML page and be very confused.
+    #[tokio::test]
+    async fn unknown_proxy_path_returns_json_404() {
+        let app = build_router(dummy_state().await);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/proxy/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "not_found");
     }
 }

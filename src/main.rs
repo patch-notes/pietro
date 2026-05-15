@@ -18,6 +18,7 @@ mod keys;
 mod proxy;
 mod routes;
 mod secret;
+mod spa;
 
 use std::path::PathBuf;
 use std::sync::Arc;
