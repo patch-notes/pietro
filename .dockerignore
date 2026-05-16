@@ -1,0 +1,29 @@
+# Keep the Docker build context lean. Anything in here is invisible to
+# `COPY` directives in the Dockerfile.
+
+# Rust build output (huge, host-specific).
+target/
+
+# Node modules (the frontend stage runs `npm ci` itself).
+frontend/node_modules/
+
+# Stale SPA build — the frontend stage rebuilds it fresh.
+frontend/dist/
+
+# Local SQLite + WAL/SHM files.
+pietro.db
+pietro.db-journal
+pietro.db-wal
+pietro.db-shm
+
+# VCS + editor + OS noise.
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Docs the container doesn't need.
+*.md
+!README.md
