@@ -69,6 +69,7 @@ origin v0.1.0`) to exercise the release workflow end to end.
   - One handler `forward(State, ConnectInfo, Path((service_id, tail)), Request)`.
   - Hop-by-hop list: Connection, Keep-Alive, Proxy-Authenticate, Proxy-Authorization, TE, Trailer, Transfer-Encoding, Upgrade — plus the comma-separated names listed inside the inbound `Connection:` header. Plus Authorization (we replace with operator credential). Plus Host (reqwest sets it from the URL). Plus `pietro_session` carved out of `Cookie:` (other cookies pass through).
   - **`service.auth` is `Option<ServiceAuth>`** (post-v1 change): when `None`, the proxy forwards as-is without injecting any operator credential — used for open internal upstreams. The caller's own `Authorization` header still gets stripped (we don't pass caller credentials through; we either replace them with operator credentials, or send nothing).
+  - **`service.timeout_secs` is `Option<u64>`** (post-v1 change): per-service upstream timeout in seconds, defaults to 60. Built via `build_client_with_timeout(timeout)` in `forward_inner`. `0` is rejected at config load.
   - Bodies streamed both ways: a 10 GB upload doesn't OOM Pietro.
   - 60 s default per-request timeout; redirects disabled (response Location passes through to caller unchanged).
   - `UsageBatcher` (Mutex<HashMap<String, SystemTime>>) drained every 30 s by a tokio task that also drains on graceful shutdown (driven by a `tokio::sync::oneshot`).

@@ -79,6 +79,8 @@ pub struct Service {
     /// internal services are open). When `Some`, the proxy injects it per
     /// §8 `auth:` block semantics.
     pub auth: Option<ServiceAuth>,
+    /// Per-service upstream timeout in seconds. `None` → 60 s default.
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +183,8 @@ struct RawService {
     upstream_url: String,
     #[serde(default)]
     auth: Option<RawAuth>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,12 +282,18 @@ impl TryFrom<RawConfig> for Config {
                     })
                 }
             };
+            if let Some(t) = s.timeout_secs
+                && t == 0
+            {
+                return Err(anyhow!("service {:?}: timeout_secs must be > 0", s.id));
+            }
             services.push(Service {
                 id: ServiceId(s.id),
                 display_name: s.display_name,
                 description: s.description,
                 upstream_url,
                 auth,
+                timeout_secs: s.timeout_secs,
             });
         }
 
@@ -433,6 +443,28 @@ mod tests {
             cfg.services[0].auth.is_none(),
             "expected auth-less service to round-trip as None"
         );
+    }
+
+    #[test]
+    fn accepts_timeout_secs_in_service() {
+        let yaml = sample_yaml().replace(
+            "    auth:\n      kind: bearer\n      value: \"sk-test\"\n",
+            "    timeout_secs: 120\n",
+        );
+        let raw: RawConfig = serde_yaml::from_str(&yaml).unwrap();
+        let cfg = Config::try_from(raw).unwrap();
+        assert_eq!(cfg.services[0].timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn rejects_timeout_secs_of_zero() {
+        let yaml = sample_yaml().replace(
+            "    auth:\n      kind: bearer\n      value: \"sk-test\"\n",
+            "    timeout_secs: 0\n",
+        );
+        let raw: RawConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = Config::try_from(raw).unwrap_err();
+        assert!(format!("{err}").contains("timeout_secs must be > 0"));
     }
 
     #[test]

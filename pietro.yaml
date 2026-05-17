@@ -29,5 +29,7 @@ services:
     display_name: "SearXNG"
     description: "Web search"
     upstream_url: "http://searxng.lan"
-#    auth:
-#      kind: bearer
+    # Optional: seconds before Pietro gives up on the upstream. Default: 60.
+    # timeout_secs: 120
+    auth:
+      kind: bearer

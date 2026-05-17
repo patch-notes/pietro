@@ -9,9 +9,8 @@
 //!   * [`UsageBatcher`] — in-memory `HashMap<KeyId, SystemTime>` of last-used
 //!     stamps; the background [`run_usage_flusher`] task drains it to the DB
 //!     every 30 s (and on shutdown).
-//!   * [`build_client`]   — `reqwest::Client` configured with a 60 s default
-//!     timeout. Each forwarded request can use a different timeout if we ever
-//!     add per-service timeouts in v2.
+//!   * [`build_client_with_timeout`] — reqwest `Client` builder; each forwarded
+//!     request uses its service's configured timeout (or 60 s default).
 //!
 //! Streaming everywhere: a 10 GB upload through Pietro does not OOM Pietro
 //! (§12 "What we do NOT do").
@@ -36,9 +35,9 @@ use crate::errors::Error;
 use crate::keys;
 use crate::routes::AppState;
 
-/// Default per-request upstream timeout. Configurable per service in v2 if
-/// we ever need to, but a single ceiling is enough for v1.
-const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default per-request upstream timeout. Used when a service has no explicit
+/// `timeout_secs` in the config.
+pub const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How often the background task drains the usage batcher to the DB.
 const USAGE_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
@@ -108,14 +107,18 @@ where
 
 // -- reqwest client builder --------------------------------------------------
 
-/// Build the proxy's HTTP client. Distinct from the OIDC client because:
-///   * we *do* want to follow redirects here? No — actually we don't; an
-///     upstream `Location:` should pass through to the caller unchanged.
-///   * we want a per-request timeout, not a per-connection one.
+/// Build the proxy's HTTP client with the default timeout. Used for the shared
+/// client (currently only for OIDC discovery — but we keep it around in case
+/// future callers need it).
 pub fn build_client() -> anyhow::Result<reqwest::Client> {
+    build_client_with_timeout(DEFAULT_UPSTREAM_TIMEOUT)
+}
+
+/// Build the proxy's HTTP client with a custom timeout.
+pub fn build_client_with_timeout(timeout: Duration) -> anyhow::Result<reqwest::Client> {
     reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(DEFAULT_UPSTREAM_TIMEOUT)
+        .timeout(timeout)
         // Allow HTTP/2 upgrades but don't *require* them — some upstreams
         // are still HTTP/1.1 only.
         .build()
@@ -246,13 +249,19 @@ async fn forward_inner(
     add_xff_entry(&mut upstream_headers, peer);
 
     // 8. Issue with reqwest, streaming the inbound body.
+    // Build a client with the service's timeout (or the global default).
+    let timeout = service
+        .timeout_secs
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_UPSTREAM_TIMEOUT);
+    let client =
+        build_client_with_timeout(timeout).context("building per-request proxy http client")?;
     let upstream_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|_| Error::BadRequest("invalid method"))?;
     let inbound_stream = body.into_data_stream().map_err(std::io::Error::other);
     let reqwest_body = reqwest::Body::wrap_stream(inbound_stream);
 
-    let upstream_resp = state
-        .proxy_client
+    let upstream_resp = client
         .request(upstream_method, upstream_url.clone())
         .headers(reqwest_headers_from(&upstream_headers))
         .body(reqwest_body)
@@ -502,6 +511,7 @@ mod tests {
             auth: Some(ServiceAuth::Bearer {
                 value: Secret::new("sk-OPERATOR".into()),
             }),
+            timeout_secs: None,
         }
     }
 
@@ -515,6 +525,7 @@ mod tests {
                 header: name.into(),
                 value: Secret::new("OP-SECRET".into()),
             }),
+            timeout_secs: None,
         }
     }
 
@@ -528,6 +539,7 @@ mod tests {
                 param: "api_key".into(),
                 value: Secret::new("OP".into()),
             }),
+            timeout_secs: None,
         }
     }
 
