@@ -200,7 +200,7 @@ All routes mounted on a single axum `Router`. No nested apps.
 | GET    | `/api/me`                     | `{ user_id, email, name }`.                   |
 | GET    | `/api/services`               | List of configured services (id + display name + brief description). Never returns upstream credentials. |
 | GET    | `/api/keys`                   | List the *current user's* keys: `KeyId`, `ServiceId`, label, prefix, last4, created_at, last_used_at, revoked_at. |
-| POST   | `/api/keys`                   | Body: `{ service_id, label }`. Generates key, stores hash, returns the **plaintext key exactly once**. If the user already has an active key for `service_id`, returns **409 Conflict** with code `key_already_exists`; the caller must revoke first. See §11.2. |
+| POST   | `/api/keys`                   | Body: `{ service_id, label }`. Generates key, stores hash, returns the **plaintext key exactly once**. If the user already has an active key for `service_id` **with the same `label`**, returns **409 Conflict** with code `key_already_exists`; a different label for the same service is allowed. See §11.2. (Loosened in migration `0002`; v1 was one active key per service.) |
 | DELETE | `/api/keys/:key_id`           | Soft-revoke (set `revoked_at = now()`). 204.  |
 
 ### Caller-guarded (API key in `Authorization: Bearer pi_live_...`)
@@ -341,6 +341,8 @@ CREATE INDEX api_keys_user_idx ON api_keys(user_id);
 CREATE UNIQUE INDEX api_keys_hash_idx ON api_keys(key_hash);  -- enforces non-collision
 -- At most ONE active key per (user, service). Revoked keys do not occupy the slot,
 -- so a user may revoke and immediately re-mint. Enforced by the DB, not the app.
+-- NOTE: loosened post-v1 to (user, service, label) — see migration 0002; this
+-- 0001 block is kept verbatim as the shipped history.
 CREATE UNIQUE INDEX api_keys_active_user_service_idx
     ON api_keys(user_id, service_id)
     WHERE revoked_at IS NULL;
@@ -365,14 +367,16 @@ CREATE INDEX sessions_user_idx ON sessions(user_id);
 - **Soft revocation** instead of hard delete preserves audit value (you can
   still see "key created → revoked" timeline). Hard-delete via a future
   admin tool if you ever need it.
-- **One active key per (user, service).** Enforced by the partial unique
-  index above — not by an app-layer check. Reasons: (a) the database is the
-  only place this can be raced safely; (b) it removes a class of "I have
-  four keys for the same thing, which one is on which laptop?" confusion;
-  (c) revocation remains cheap because the index excludes `revoked_at IS NOT NULL`
-  rows, so re-minting after revoke "just works". The handler maps the
-  resulting `SQLITE_CONSTRAINT_UNIQUE` to a `409 Conflict` with code
-  `key_already_exists` (see §11.2).
+- **One active key per (user, service, label)** *(loosened post-v1;
+  migration 0002; v1 was one per (user, service))*. Enforced by a partial
+  unique index — not by an app-layer check. Reasons: (a) the database is the
+  only place this can be raced safely; (b) the label distinguishes concurrent
+  keys ("laptop", "ci", "phone") so a User can hold several at once without
+  the "which one is on which machine?" confusion; (c) revocation remains cheap
+  because the index excludes `revoked_at IS NOT NULL` rows, so re-minting after
+  revoke "just works". Same service + same label is the only conflict; the
+  handler maps the resulting `SQLITE_CONSTRAINT_UNIQUE` to a `409 Conflict`
+  with code `key_already_exists` (see §11.2).
 - **`prefix` and `last4` are derived from the plaintext at creation and then
   immutable.** This is the *only* "derived data" we persist — and we persist
   it because we explicitly throw away the plaintext, so it can never be
@@ -486,14 +490,18 @@ Return to UI: { key_id, plaintext, prefix, last4, ... }   ← ONCE only.
 ```
 
 **Uniqueness contract.** A user may hold **at most one active key per
-service**. The DB enforces this via the partial unique index in §9 — the
-handler does *not* `SELECT … FOR UPDATE` first. On `INSERT`:
+(service, label)** *(loosened post-v1 in migration 0002; v1 was one active
+key per service)*. Several active keys for the same service are fine as long
+as their labels differ. The DB enforces this via the partial unique index in
+migration 0002 — the handler does *not* `SELECT … FOR UPDATE` first. On
+`INSERT`:
 
 - success → 200 with the plaintext payload (once).
-- `SQLITE_CONSTRAINT_UNIQUE` on `api_keys_active_user_service_idx` →
-  `409 Conflict`, body `{ "error": { "code": "key_already_exists",
-  "message": "An active key for this service already exists. Revoke it
-  before minting a new one." } }`.
+- `SQLITE_CONSTRAINT_UNIQUE` on `api_keys_active_user_service_label_idx` →
+  `409 Conflict`, body `{ "error": { "code": "conflict", "message":
+  "key_already_exists" } }` (an active key with this exact label already
+  exists for this service — pick a different label or revoke the existing
+  one).
 
 Why not auto-revoke the existing key and silently issue a new one? Two
 reasons: (a) principle of least astonishment — a "create" verb that
