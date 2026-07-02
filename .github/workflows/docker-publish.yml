@@ -13,8 +13,11 @@
 #
 # The image is built from the repo's three-stage Dockerfile (frontend →
 # musl backend → FROM scratch) for both linux/amd64 and linux/arm64, matching
-# Pietro's multi-arch story. Both base images (node:20-alpine, rust:1-alpine)
-# ship both arches, and buildx + QEMU handle the foreign-arch leg.
+# Pietro's multi-arch story. Each arch is built *natively* on its own
+# GitHub-hosted runner (amd64 on ubuntu-latest, arm64 on the free
+# ubuntu-24.04-arm runner) and pushed by digest; a final `merge` job stitches
+# the two digests into a single multi-arch manifest list carrying the real
+# tags. No QEMU, no emulation — the arm64 leg builds on real ARM silicon.
 #
 # Secrets: NONE beyond the automatically-injected `GITHUB_TOKEN`, which is
 # scoped to this repo and used only to authenticate to ghcr.io. No PATs, no
@@ -39,20 +42,26 @@ permissions:
   packages: write # required to push to ghcr.io under this repo's namespace
 
 jobs:
-  build-and-push:
-    name: build-and-push
-    runs-on: ubuntu-latest
+  # --- Per-arch native build. Each matrix leg runs on a runner of its own
+  # architecture and pushes an untagged, by-digest image. No tags here — the
+  # `merge` job assembles the tagged manifest list from the two digests.
+  build:
+    name: build-${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      # QEMU lets the amd64 runner build the arm64 leg via emulation.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Log in to ghcr.io using the ephemeral, repo-scoped GITHUB_TOKEN.
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -60,11 +69,74 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Derive tags + OCI labels from the event. On a `release` event
-      # github.ref is refs/tags/<tag>, so the semver patterns extract the
-      # version cleanly. `:latest` is applied only for a published,
-      # non-prerelease release — prereleases (v1.2.3-rc1) never move latest.
-      - name: Extract metadata
+      # OCI labels only — the tags are applied once, in the merge job, so we
+      # don't need the tag patterns here.
+      - name: Extract metadata (labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+
+      # Build the single-arch image and push it by digest (no tag). outputs
+      # push-by-digest=true means the registry gets a bare manifest keyed by
+      # its content digest, which the merge job references.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Per-arch cache scopes so the two legs don't clobber each other.
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      # Stash the digest as a file named after itself so the merge job can
+      # glob them all back together regardless of how many arches exist.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- Assemble the multi-arch manifest list from the per-arch digests and
+  # apply the real tags. Cheap (no build), so it runs on a plain amd64 runner.
+  merge:
+    name: merge-manifest
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive tags from the event. On a `release` event github.ref is
+      # refs/tags/<tag>, so the semver patterns extract the version cleanly.
+      # `:latest` is applied only for a published, non-prerelease release —
+      # prereleases (v1.2.3-rc1) never move latest.
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -79,13 +151,18 @@ jobs:
             type=edge,branch=master
             type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Create the manifest list: one `-t` per computed tag, referencing every
+      # per-arch digest we pushed. `imagetools create` builds the list in the
+      # registry without pulling the layers.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          # Inspect the first computed tag to confirm the multi-arch manifest.
+          tag="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          docker buildx imagetools inspect "$tag"

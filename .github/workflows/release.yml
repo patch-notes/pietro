@@ -7,6 +7,9 @@
 #
 # Job: build a static musl binary for each target (arm64 + amd64), tar +
 #      checksum, and attach the tarballs to the release that triggered us.
+#      Each arch builds natively on its own GitHub-hosted runner (amd64 on
+#      ubuntu-latest, arm64 on the free ubuntu-24.04-arm runner) — no QEMU,
+#      no `cross`, so the arm64 leg is a real native compile.
 #
 # Targets are §13: x86_64 (amd64) + aarch64 (arm64) unknown-linux-musl.
 # Anything else can be added when there's a concrete operator who needs it.
@@ -28,15 +31,20 @@ permissions:
 jobs:
   build:
     name: build-${{ matrix.target }}
-    runs-on: ubuntu-latest
+    # Each target builds on its own *native* runner — no QEMU, no `cross`.
+    # `ubuntu-24.04-arm` is a free GitHub-hosted arm64 runner (GA Aug 2025,
+    # public repos only), so the aarch64 leg compiles on real ARM silicon
+    # instead of being emulated. Much faster, and the two legs are now
+    # symmetric: musl-tools + a plain `cargo build`.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            cross: false
+            runner: ubuntu-latest
           - target: aarch64-unknown-linux-musl
-            cross: true
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -65,25 +73,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # --- musl toolchain. For x86_64 the `musl-tools` package gives us
-      # a working linker; for aarch64 we use `cross`, which spins up a
-      # containerised cross-compiler so the host's Ubuntu doesn't need
-      # an aarch64-musl gcc.
-      - name: Install musl-tools (x86_64)
-        if: matrix.cross == false
+      # --- musl toolchain. `musl-tools` provides a musl-gcc that targets the
+      # runner's own architecture — aarch64 on the arm runner, x86_64 on the
+      # amd64 runner — so both legs use the exact same step. No `cross`, no
+      # containerised cross-compiler, no emulation.
+      - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Install cross (aarch64)
-        if: matrix.cross == true
-        run: cargo install cross --locked
-
       - name: Build release binary
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --locked
-          else
-            cargo build --release --target ${{ matrix.target }} --locked
-          fi
+        run: cargo build --release --target ${{ matrix.target }} --locked
 
       # --- Package: tarball + sha256.
       - name: Package artifact
