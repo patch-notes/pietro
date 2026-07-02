@@ -24,12 +24,11 @@ PLATFORMS  ?= linux/amd64,linux/arm64
 # --build-arg, --jobs=N for parallel multi-arch builds).
 BUILD_ARGS ?=
 
-# Registry to push to when running `make push`. Defaults to the Pietro
-# source-of-truth at git.patchnotes.com/patchnotes (Gitea container
-# registry under the same namespace as the source repo,
-# https://git.patchnotes.com/patchnotes/pietro). Override at the CLI for
-# scratch pushes elsewhere.
-REGISTRY   ?= git.patchnotes.com/patchnotes
+# Registry to push to when running `make push`. Defaults to the project's
+# GitHub Container Registry namespace (ghcr.io/patch-notes), matching the
+# ghcr.io/patch-notes/pietro image that CI publishes. Override at the CLI
+# for scratch pushes elsewhere.
+REGISTRY   ?= ghcr.io/patch-notes
 
 .PHONY: docker docker-build docker-build-amd64 docker-build-arm64 \
         docker-run docker-shell push inspect clean help
@@ -104,11 +103,10 @@ docker-shell:
 	$(CONTAINER) run --rm -it $(IMAGE)-builder:$(TAG) sh
 
 # Push the manifest list (and every arch image it references) to REGISTRY.
-# Default REGISTRY is git.patchnotes.com/patchnotes, so:
+# Default REGISTRY is ghcr.io/patch-notes, so:
 #   make push
-# ships to git.patchnotes.com/patchnotes/pietro:latest (matching the
-# source repo at https://git.patchnotes.com/patchnotes/pietro). Override
-# REGISTRY=host/namespace to push elsewhere.
+# ships to ghcr.io/patch-notes/pietro:latest (matching the image CI
+# publishes). Override REGISTRY=host/namespace to push elsewhere.
 push:
 	@test -n "$(REGISTRY)" || (echo "REGISTRY is empty; set REGISTRY=host/namespace"; exit 1)
 	$(CONTAINER) manifest push --all $(IMAGE_REF) docker://$(REGISTRY)/$(IMAGE_REF)

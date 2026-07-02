@@ -130,10 +130,10 @@ instead of the SPA — run Vite (`cd frontend && npm run dev`) for UI work.
 
 ## Containerization & releases
 
-- **Container:** three-stage `Dockerfile` (node → rust-alpine musl → `scratch`), driven by `Makefile` for multi-arch podman builds (`make docker`, `make help`). Default push registry is `git.patchnotes.com/patchnotes`.
-- **`.github/workflows/release.yml`:** tag-triggered (`v*`) musl tarballs + `.sha256` for x86_64 (host `musl-tools`) and aarch64 (`cross`); hyphenated tags become prereleases. Upload via `softprops/action-gh-release@v2`.
-- **`.github/workflows/docker-publish.yml`:** multi-arch (amd64+arm64) image build pushed to `ghcr.io/patch-notes/pietro` on `master` push, `v*` tags, and manual dispatch. Auth via repo-scoped `GITHUB_TOKEN` only.
-- **Remotes:** `gitea` → git.patchnotes.com/patchnotes/pietro (private origin of record); `origin` → github.com/patch-notes/pietro (public mirror).
+- **Container:** three-stage `Dockerfile` (node → rust-alpine musl → `scratch`), driven by `Makefile` for multi-arch podman builds (`make docker`, `make help`). Default push registry is `ghcr.io/patch-notes`.
+- **`.github/workflows/release.yml`:** release-triggered (`v*`) musl tarballs + `.sha256` for x86_64 and aarch64, each built natively on its own GitHub-hosted runner (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`) with `musl-tools`; hyphenated tags become prereleases. Upload via `softprops/action-gh-release@v2`.
+- **`.github/workflows/docker-publish.yml`:** multi-arch (amd64+arm64) image, each arch built natively (arm64 on `ubuntu-24.04-arm`) and pushed by digest, then merged into a tagged manifest list. Pushed to `ghcr.io/patch-notes/pietro` on `master` push, `v*` tags, and manual dispatch. Auth via repo-scoped `GITHUB_TOKEN` only.
+- **Remote:** `origin` → github.com/patch-notes/pietro.
 
 ## Storage
 

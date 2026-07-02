@@ -40,13 +40,13 @@ frontend changes also run `npm run lint` and `npm run build`. Kill stale binarie
 (`pkill -f target/release/pietro`) before manual smoke tests.
 
 ## Commit & Pull Request Guidelines
-Small, focused commits (one concern each); imperative subjects. Remotes: `gitea`
-(private origin of record) and `origin` (public GitHub mirror). PRs should note
-which gates were run and link relevant `docs/architecture.md`/`memory.md` context.
+Small, focused commits (one concern each); imperative subjects. Push to the
+`origin` remote (github.com/patch-notes/pietro). PRs should note which gates
+were run and link relevant `docs/architecture.md`/`memory.md` context.
 
 ## Architecture Overview
 `docs/architecture.md` is the single system reference: the source map, HTTP
 surface, design decisions in force, dependency budgets, the run-end-to-end
 smoke recipe, and the containerization/release story. Read it before making
-structural changes. Two remotes: `gitea` (private origin of record) and
-`origin` (public GitHub mirror).
+structural changes. The repository lives at github.com/patch-notes/pietro
+(remote `origin`).
