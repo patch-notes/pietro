@@ -29,7 +29,7 @@
 ############################
 # 1) Frontend (React + Vite)
 ############################
-FROM node:20-alpine AS frontend
+FROM mirror.gcr.io/library/node:20-alpine AS frontend
 
 WORKDIR /app/frontend
 
@@ -48,7 +48,7 @@ RUN npm run build
 ############################
 # 2) Backend (Rust → musl)
 ############################
-FROM rust:1-alpine AS backend
+FROM mirror.gcr.io/library/rust:1-alpine AS backend
 
 # musl-dev gives us the C runtime headers the linker needs for fully-static
 # binaries; the rest are tiny build-time conveniences.
