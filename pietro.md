@@ -12,10 +12,11 @@ be small and boring. Nothing in this document should be implemented until the
 plan is reviewed and locked.
 
 > **Checkpoint 2026-05-15:** plan locked, **M1–M7 shipped** (single binary,
-> 60/60 Rust tests, 11 MB stripped musl-ready binary, GitHub Actions
-> release workflow). v1 is complete. For a one-page resumption snapshot,
-> read **`STATUS.md`** at the repo root. For the live milestone state with
-> shipped notes, see [§19](#19-milestones-build-order).
+> Rust tests green, ~11 MB stripped musl-ready binary, GitHub Actions
+> release + GHCR workflows). v1 is complete. For the system reference
+> (source map, HTTP surface, design decisions, run/release), read
+> **`docs/architecture.md`**. For the live milestone state with shipped
+> notes, see [§19](#19-milestones-build-order).
 
 ---
 
