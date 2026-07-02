@@ -2,9 +2,14 @@
 # GitHub Container Registry (ghcr.io).
 #
 # Trigger:
-#   * push to `master`      → publishes `:edge` + `:sha-<short>`
-#   * push of a `v*` tag    → publishes `:X.Y.Z`, `:X.Y`, `:latest`
+#   * push to `master`         → publishes `:edge` + `:sha-<short>`
+#   * a published GitHub Release → publishes `:X.Y.Z`, `:X.Y`, and `:latest`
+#                                (the `:latest` tag only for non-prereleases)
 #   * manual `workflow_dispatch`
+#
+# Versioned images ship on release *publication* (not raw tag push), so the
+# container image and the binary artifacts (release.yml) come out of the same
+# event and can't double-fire.
 #
 # The image is built from the repo's three-stage Dockerfile (frontend →
 # musl backend → FROM scratch) for both linux/amd64 and linux/arm64, matching
@@ -21,8 +26,8 @@ on:
   push:
     branches:
       - master
-    tags:
-      - "v*"
+  release:
+    types: [published]
   workflow_dispatch:
 
 env:
@@ -55,19 +60,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Derive tags + OCI labels from the git ref.
+      # Derive tags + OCI labels from the event. On a `release` event
+      # github.ref is refs/tags/<tag>, so the semver patterns extract the
+      # version cleanly. `:latest` is applied only for a published,
+      # non-prerelease release — prereleases (v1.2.3-rc1) never move latest.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
             type=sha,prefix=sha-
             type=edge,branch=master
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

@@ -1,11 +1,15 @@
 # GitHub Actions release workflow for Pietro (§13).
 #
-# Trigger: a tag push matching `v*` (e.g. `v0.1.0`, `v1.2.3-rc1`).
-# Job: build a static musl binary for each target, tar + checksum,
-#      attach to a GitHub Release.
+# Trigger: when a GitHub Release is *published* (created from a `v*` tag in
+# the Releases UI, `gh release create`, or the API). Publishing the release
+# is the single event that drives artifact builds — no separate tag-push
+# run, so releasing and building stay in lock-step and can't double-fire.
 #
-# Targets are §13: x86_64 + aarch64 unknown-linux-musl. Anything else can
-# be added when there's a concrete operator who needs it.
+# Job: build a static musl binary for each target (arm64 + amd64), tar +
+#      checksum, and attach the tarballs to the release that triggered us.
+#
+# Targets are §13: x86_64 (amd64) + aarch64 (arm64) unknown-linux-musl.
+# Anything else can be added when there's a concrete operator who needs it.
 #
 # The workflow does the §13 build sequence in order: frontend first
 # (`npm ci && npm run build` → `frontend/dist/`), then `cargo build
@@ -15,9 +19,8 @@
 name: release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write  # needed to create/attach the release
@@ -99,11 +102,13 @@ jobs:
           echo "artifact=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
           echo "sha=dist/${NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
 
+      # Triggered by a `release` event, so action-gh-release attaches the
+      # files to the release that fired the workflow (github.event.release).
+      # We don't touch draft/prerelease — the release already carries its own
+      # state, set when it was published.
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ steps.pkg.outputs.artifact }}
             ${{ steps.pkg.outputs.sha }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
