@@ -671,8 +671,9 @@ services:
             &plaintext[plaintext.len() - 4..]
         );
 
-        // Second mint for the same service: 409 with the contract code.
-        let dup = mint("openai", "laptop-2").await;
+        // Second mint for the same service AND same label: 409 with the
+        // contract code.
+        let dup = mint("openai", "laptop").await;
         assert_eq!(dup.status(), StatusCode::CONFLICT);
         let body = axum::body::to_bytes(dup.into_body(), usize::MAX)
             .await
@@ -687,7 +688,11 @@ services:
             "expected conflict reason in message: {v}"
         );
 
-        // And the list endpoint shows exactly one key.
+        // Same service with a DIFFERENT label is allowed → a second active key.
+        let other = mint("openai", "desktop").await;
+        assert_eq!(other.status(), StatusCode::CREATED);
+
+        // And the list endpoint now shows both active keys.
         let list = build_router(state)
             .oneshot(
                 Request::builder()
@@ -703,7 +708,7 @@ services:
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v.as_array().unwrap().len(), 2);
         // Listing must NEVER expose plaintext or hashes.
         assert!(v[0].get("plaintext").is_none());
         assert!(v[0].get("key_hash").is_none());

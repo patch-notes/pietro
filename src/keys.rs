@@ -13,8 +13,10 @@
 //!
 //! Format: `pi_live_<22 char base32-Crockford>` (§11.1). Storage:
 //! `blake3(pepper || plaintext)` (§11.3). Uniqueness: at most one active key
-//! per `(user_id, service_id)`, enforced by a partial unique index in the
-//! schema (§9) — not by a `SELECT` in this module.
+//! per `(user_id, service_id, label)`, enforced by a partial unique index in
+//! the schema (migration 0002) — not by a `SELECT` in this module. Same
+//! service with a different label is allowed; an exact (service, label)
+//! duplicate is rejected.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -169,9 +171,10 @@ fn generate_key_id() -> KeyId {
 /// Insert a new key row for `(user_id, service_id, label)`.
 ///
 /// Maps the SQLite partial-unique-index violation on
-/// `api_keys_active_user_service_idx` to `Error::Conflict("key_already_exists")`
-/// — see §11.2 "Uniqueness contract" for the rationale (no silent
-/// auto-revoke).
+/// `api_keys_active_user_service_label_idx` to
+/// `Error::Conflict("key_already_exists")` — the User already holds an active
+/// key with this exact label for this service (§11.2 "Uniqueness contract";
+/// no silent auto-revoke). A different label for the same service is allowed.
 pub async fn mint(
     pool: &SqlitePool,
     pepper: &[u8],
@@ -213,11 +216,11 @@ pub async fn mint(
             last4,
         }),
         Err(sqlx::Error::Database(db)) if is_unique_violation(db.as_ref()) => {
-            // Could be either the (user, service) active-uniqueness index or
-            // the key_hash collision index. We can't easily tell the two
-            // apart from the error message in SQLite; the latter is
+            // Could be either the (user, service, label) active-uniqueness
+            // index or the key_hash collision index. We can't easily tell the
+            // two apart from the error message in SQLite; the latter is
             // astronomically improbable (112-bit collision), so we treat any
-            // UNIQUE failure here as the (user, service) case.
+            // UNIQUE failure here as the (user, service, label) case.
             Err(Error::Conflict("key_already_exists"))
         }
         Err(e) => Err(Error::Internal(e.into())),
@@ -410,16 +413,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn second_active_key_for_same_service_yields_409() {
+    async fn second_active_key_same_service_and_label_yields_409() {
         let (pool, pepper) = fixture().await;
-        mint(&pool, &pepper, "u1", "svc-a", "k1").await.unwrap();
-        let err = mint(&pool, &pepper, "u1", "svc-a", "k2")
+        mint(&pool, &pepper, "u1", "svc-a", "laptop").await.unwrap();
+        // Same service AND same label → collision.
+        let err = mint(&pool, &pepper, "u1", "svc-a", "laptop")
             .await
-            .expect_err("dup must fail");
+            .expect_err("dup label must fail");
         match err {
             Error::Conflict(code) => assert_eq!(code, "key_already_exists"),
             other => panic!("expected Conflict, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn second_active_key_same_service_different_label_is_allowed() {
+        let (pool, pepper) = fixture().await;
+        mint(&pool, &pepper, "u1", "svc-a", "laptop").await.unwrap();
+        // Same service, DIFFERENT label → allowed (distinct concurrent keys).
+        mint(&pool, &pepper, "u1", "svc-a", "ci-server")
+            .await
+            .expect("different label for the same service must succeed");
+
+        // Both are active and listed.
+        let list = list_for_user(&pool, "u1").await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|k| k.service_id == "svc-a"));
+        assert!(list.iter().any(|k| k.label == "laptop"));
+        assert!(list.iter().any(|k| k.label == "ci-server"));
     }
 
     #[tokio::test]

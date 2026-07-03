@@ -20,8 +20,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 /// Compile-time-embedded list of migrations under `./migrations`.
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-/// Open the SQLite database at `path`, create it if missing, run migrations,
-/// and hand back a ready-to-use pool.
+/// Open the SQLite database at `path`, create it (and its immediate parent
+/// directory) if missing, run migrations, and hand back a ready-to-use pool.
+/// This is the `serve` startup path: migrations always run on start.
 ///
 /// The pool is small on purpose. SQLite serialises writers anyway; oversizing
 /// the pool only buys lock contention.
@@ -36,7 +37,20 @@ pub async fn connect(path: &str) -> Result<SqlitePool> {
 
 /// Open the pool without running migrations. Internal helper kept separate so
 /// the `migrate` subcommand can decide what to log.
+///
+/// Ensures the DB file's immediate parent directory exists first, so a fresh
+/// deploy pointing at e.g. `/var/lib/pietro/pietro.db` works on the very first
+/// `serve` without a preceding `migrate`. We only create the immediate parent
+/// (not arbitrary ancestors) — the operator owns the layout above that.
 async fn open_pool(path: &str) -> Result<SqlitePool> {
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent dir for {path:?}"))?;
+    }
+
     let opts = SqliteConnectOptions::from_str(path)
         .with_context(|| format!("invalid sqlite path: {path:?}"))?
         .create_if_missing(true)
@@ -61,18 +75,9 @@ async fn open_pool(path: &str) -> Result<SqlitePool> {
 /// migrations the migrator reports as currently applied.
 ///
 /// Used by `pietro migrate`. Idempotent: re-running it after all migrations
-/// are applied is a no-op.
+/// are applied is a no-op. The parent-directory ensure lives in `open_pool`,
+/// so both this and `serve`'s `connect` get it.
 pub async fn migrate(path: &str) -> Result<usize> {
-    // Touch the parent dir so SQLite has a place to create the file on a
-    // fresh deploy. We deliberately don't `mkdir -p` arbitrary paths beyond
-    // the immediate parent — the operator owns the layout.
-    if let Some(parent) = Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating parent dir for {path:?}"))?;
-    }
     let pool = open_pool(path).await?;
     MIGRATOR
         .run(&pool)
@@ -111,10 +116,11 @@ mod tests {
         }
 
         // The partial unique index is the storage-level guarantee for the
-        // "one active key per (user, service)" rule (§9, §11.2).
+        // "one active key per (user, service, label)" rule (§11.2, migration
+        // 0002).
         let idx: Option<(String,)> = sqlx::query_as(
             "SELECT name FROM sqlite_master \
-             WHERE type = 'index' AND name = 'api_keys_active_user_service_idx'",
+             WHERE type = 'index' AND name = 'api_keys_active_user_service_label_idx'",
         )
         .fetch_optional(&pool)
         .await
@@ -122,8 +128,37 @@ mod tests {
         assert!(idx.is_some(), "partial unique index was not created");
     }
 
-    /// Two active rows for the same (user, service) must trip
-    /// SQLITE_CONSTRAINT_UNIQUE. Revoking the first frees the slot.
+    /// `connect` (the `serve` startup path) must create the DB file *and* its
+    /// missing parent directory, then run migrations — so a fresh deploy works
+    /// on the first `serve` without a preceding `pietro migrate`.
+    #[tokio::test]
+    async fn connect_creates_missing_parent_dir_and_migrates() {
+        let base = std::env::temp_dir().join(format!("pietro-db-test-{}", std::process::id()));
+        // A nested dir that does NOT exist yet.
+        let db_path = base.join("nested").join("pietro.db");
+        let db_str = db_path.to_str().unwrap().to_string();
+        // Ensure a clean slate.
+        let _ = std::fs::remove_dir_all(&base);
+
+        let pool = connect(&db_str)
+            .await
+            .expect("connect must create dir + db");
+
+        // The file exists and a migrated table is queryable.
+        assert!(db_path.exists(), "db file was not created at {db_path:?}");
+        let n: (i64,) = sqlx::query_as("SELECT count(*) FROM users")
+            .fetch_one(&pool)
+            .await
+            .expect("users table must exist after migrations");
+        assert_eq!(n.0, 0);
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Two active rows for the same (user, service, label) must trip
+    /// SQLITE_CONSTRAINT_UNIQUE. Revoking the first frees the slot. Rows that
+    /// share (user, service) but differ by label are NOT a conflict.
     #[tokio::test]
     async fn active_user_service_uniqueness_is_enforced() {
         let pool = connect(":memory:").await.unwrap();
@@ -171,5 +206,17 @@ mod tests {
         insert_key("pi_cccccc", b"hash-3--------------------------")
             .await
             .expect("after revoke, re-mint works");
+
+        // Same (user, service) but a DIFFERENT label is not a conflict: insert
+        // a second active row that differs only by label.
+        sqlx::query(
+            "INSERT INTO api_keys \
+             (id, user_id, service_id, label, key_hash, prefix, last4) \
+             VALUES ('pi_dddddd', 'user-1', 'svc', 'other-label', ?, 'pi_live_aaaa', 'zzzz')",
+        )
+        .bind(b"hash-4--------------------------".as_slice())
+        .execute(&pool)
+        .await
+        .expect("a different label for the same (user, service) must be allowed");
     }
 }

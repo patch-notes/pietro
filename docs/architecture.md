@@ -57,7 +57,7 @@ per-route ACLs, token refresh, "log out everywhere").
 | GET | `/api/me` | session-guarded: `{ user_id, email, display_name }`. |
 | GET | `/api/services` | session-guarded: `[{ id, display_name, description }]` — never upstream URL or auth. |
 | GET | `/api/keys` | session-guarded: current user's keys (no plaintext, no hash). |
-| POST | `/api/keys` | mint with plaintext-once contract; 409 `key_already_exists` on dup. |
+| POST | `/api/keys` | mint with plaintext-once contract; 409 `key_already_exists` on an active same-service same-label duplicate. |
 | DELETE | `/api/keys/{key_id}` | soft revoke; 204 / 404 if not active or not owned. |
 | ANY | `/proxy/{service_id}` and `/proxy/{service_id}/` | bare/trailing-slash → upstream root (`forward_bare`). |
 | ANY | `/proxy/{service_id}/{*path}` | bearer-authed, streaming forwarder (`forward`); auth injected; hop-by-hop stripped; XFF; status+body pass-through. |
@@ -69,7 +69,7 @@ All error responses: `{ "error": { "code": "<machine>", "message": "<human>" } }
 ## Design decisions in force
 
 - **One binary, one config file, one DB file.** After M7 the binary contains the SPA bundle.
-- **One active key per (user, service).** A partial unique index in SQLite is the enforcer; the app maps the violation to 409 `key_already_exists`. No silent auto-revoke.
+- **One active key per (user, service, label).** A partial unique index in SQLite is the enforcer; the app maps the violation to 409 `key_already_exists`. Several concurrent keys for the same service are allowed as long as their labels differ — an exact (service, label) re-mint is the only conflict. No silent auto-revoke. (Loosened from the v1 "one per (user, service)" rule in migration `0002`.)
 - **Plaintext leak surface: exactly two places.** Mint response (once), and the bearer header on the proxy hot path (hashed immediately).
 - **`service.auth` is optional.** Open upstreams get no injected credential; the caller's own `Authorization` is still stripped (we send operator creds or nothing).
 - **`service.timeout_secs` is optional** (per-service upstream timeout, default 60; `0` rejected at config load).
